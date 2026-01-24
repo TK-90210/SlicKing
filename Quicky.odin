@@ -1,10 +1,10 @@
 package main
+import "base:runtime"
 import "core:fmt"
 import "core:math/linalg"
-import "vendor:raylib"
-import "core:mem/virtual"
 import "core:mem"
-import "base:runtime"
+import "core:mem/virtual"
+import "vendor:raylib"
 
 // compiler flags //
 STOP_ON_MISMATCHED_GENERATION_TAGS :: true
@@ -103,99 +103,124 @@ transform_to_camera :: proc {
 }
 
 // Things //
-ThingIdx :: struct {
-  idx: u32,
-  generation: u32
-}
 Thing :: struct {
 	pos:        [2]f32,
-  level:      Level,
-  draw_thing: proc(thing: ThingIdx, camera: Camera),
-}
-Things :: struct {
-  count: u32,
-  offset: u32,
-
-/* vim macro for easily updating Things
-0wwwi[]
-*/
-	pos:        [][2]f32,
-  level:      []Level,
-  draw_thing: []proc(thing: ThingIdx, camera: Camera),
-
-  generation: []u32
-}
-init_thingpool :: proc(arena: ^virtual.Arena, thing_pool: ^Things, count: u32) {
-  err: runtime.Allocator_Error
-  thing_pool.count = count
-
-/* vim macro for easily updating init_thing_pool
-0withing_pool.wwi, err = virtual.make(arena, xxA count); assert(err == .None)
-*/
-  thing_pool.pos, err = virtual.make(arena, [][2]f32, count); assert(err == .None)
-  thing_pool.level, err = virtual.make(arena, []Level, count); assert(err == .None)
-  thing_pool.draw_thing, err = virtual.make(arena, []proc(thing_idx: ThingIdx, camera:Camera), count); assert(err == .None)
-
-  thing_pool.generation, err = virtual.make(arena, []u32, count); assert(err == .None)
-
-}
-get_thing :: proc(thing_pool: Things, thing_idx: ThingIdx) -> (thing: Thing, successful: bool = false) {
-  assert(thing_idx.idx < thing_pool.count)
-  if thing_idx.generation == thing_pool.generation[thing_idx.idx] {
-    successful = true
-    when STOP_ON_MISMATCHED_GENERATION_TAGS {
-      panic("thing is out of date")
-    }
-  }
-  thing = Thing{
-/* vim macro for easily updating get_thing
-0wwv$hxyiw$a = pAbithing_pool.A[thing_idx.idx],
-*/
-	pos = thing_pool.pos[thing_idx.idx],
-  level = thing_pool.level[thing_idx.idx],
-  draw_thing = thing_pool.draw_thing[thing_idx.idx],
-  }
-  return thing, successful
-}
-set_thing :: proc(thing_pool: Things, thing_idx: ThingIdx, thing: Thing) {
-  assert(thing_idx.idx < thing_pool.count)
-  if thing_idx.generation == thing_pool.generation[thing_idx.idx] {
-    successful = true
-    when STOP_ON_MISMATCHED_GENERATION_TAGS {
-      panic("thing is out of date")
-    }
-  }
-}
-thingpool_push :: proc(thing_pool: ^Things, amount: u32) -> (starting_idx: ThingIdx, successful: bool) {
-  successful = thing_pool.offset + amount < thing_pool.count
-  when STOP_ON_POOL_OVERFLOW {
-    if !successful {
-      panic("pool is out of memory")
-    }
-  }
-  for (idx in thing_pool.offset..<(thing_poo.offset + amount)) {
-    thing_pool.generation[idx] += 1
-    thing_idx: ThingIdx = {idx, thing_pool.generation[idx]}
-    set_thing(thing_pool^, thing_idx, {0})
-  }
-  thing_pool.offset += amount
-}
-/* vim macro for easily updating set_thing
-0v0wwv$hs[thing_idx.p€kbidx] = thing.Ithing_pool.lyiw$p
-*/
-	thing_pool.pos[thing_idx.idx] = thing.pos
-  thing_pool.level[thing_idx.idx] = thing.level
-  thing_pool.draw_thing[thing_idx.idx] = thing.draw_thing
+	level:      Level,
+	draw_thing: proc(thing: Thing, camera: Camera),
 }
 fast_dot :: proc(level: Level) -> Thing {
-	return {pos = level_center(level), 
-    level = level,
-    draw_thing = proc(thing_idx: ThingIdx, camera: Camera) {
-      raylib.DrawCircleV(transform_to_camera(get.pos, camera), 1. * camera.zoom, raylib.BLUE)
-		}
-  }
+	thing: Thing = {}
+	thing.pos = level_center(level)
+	thing.level = level
+	thing.draw_thing = proc(thing: Thing, camera: Camera) {
+		raylib.DrawCircleV(transform_to_camera(thing.pos, camera), 1. * camera.zoom, raylib.BLUE)
+	}
+
+	return thing
 }
 
+ThingIdx :: struct {
+	idx:        u32,
+	generation: u32,
+}
+ThingPool :: struct {
+	offset:      u32,
+	generations: []u32,
+	thing:       #soa[]Thing,
+}
+init_things :: proc(arena: ^virtual.Arena, thing_pool: ^ThingPool, count: u32) {
+	err: runtime.Allocator_Error
+	thing_pool.offset = 0
+	thing_pool.generations, err = virtual.make(arena, []u32, count)
+	assert(err == .None)
+
+	pos, pos_err := virtual.make(arena, [][2]f32, count)
+	assert(pos_err == .None)
+	level, level_err := virtual.make(arena, []Level, count)
+	assert(level_err == .None)
+	draw_thing, draw_err := virtual.make(arena, []proc(thing: ThingIdx, camera: Camera), count)
+	assert(draw_err == .None)
+
+	thing_pool.thing = transmute(#soa[]Thing)soa_zip(pos, level, draw_thing)
+}
+get_thing :: proc(
+	thing_pool: ^ThingPool,
+	thing_idx: ThingIdx,
+) -> (
+	thing: Thing,
+	successful: bool = true,
+) {
+	assert(thing_idx.idx < u32(len(thing_pool.thing)))
+	generation: u32 = thing_pool.generations[thing_idx.idx]
+	thing = thing_pool.thing[thing_idx.idx]
+	if thing_idx.generation != generation {
+		successful = false
+		when STOP_ON_MISMATCHED_GENERATION_TAGS {
+			panic("thing is out of date")
+		}
+	}
+	return thing, successful
+}
+set_thing :: proc(
+	thing_pool: ^ThingPool,
+	thing_idx: ThingIdx,
+	thing: Thing,
+) -> (
+	successful: bool = false,
+) {
+	assert(thing_idx.idx < u32(len(thing_pool.thing)))
+	generation: u32 = thing_pool.generations[thing_idx.idx]
+	if thing_idx.generation != generation {
+		successful = false
+		when STOP_ON_MISMATCHED_GENERATION_TAGS {
+			panic("thing is out of date")
+		}
+	}
+	thing_pool.thing[thing_idx.idx] = thing
+	return successful
+}
+push_things :: proc(
+	thing_pool: ^ThingPool,
+  things: []Thing,
+) -> (
+	starting_idx: ThingIdx,
+	successful: bool,
+) {
+  amount: u32 = u32(len(things))
+	successful = thing_pool.offset + amount < u32(len(thing_pool.thing))
+	when STOP_ON_POOL_OVERFLOW {
+		if !successful {
+			panic("pool is out of memory")
+		}
+	}
+	starting_idx.idx = thing_pool.offset
+	for i in 0..<amount {
+    idx: u32 = i + thing_pool.offset
+
+		thing_idx: ThingIdx = {idx, thing_pool.generations[idx] + 1}
+		thing_pool.generations[idx] = thing_idx.generation
+
+		set_thing(thing_pool, thing_idx, things[i])
+	}
+	thing_pool.offset += amount
+	return starting_idx, successful
+}
+push_thing :: proc(thing_pool: ^ThingPool, thing: Thing) -> (
+	starting_idx: ThingIdx,
+	successful: bool,
+) {
+  things_arr: [1]Thing = {thing}
+  thing_slice: []Thing = things_arr[:]
+  return push_things(thing_pool, thing_slice)
+}
+
+draw_things :: proc(thing_pool: ^ThingPool, camera: Camera) {
+  for i in 0..<thing_pool.offset {
+    idx: ThingIdx = {idx=i, generation=thing_pool.generations[i]}
+    thing, _ := get_thing(thing_pool, idx)
+    thing.draw_thing(thing, camera)
+  }
+}
 
 // Setup //
 setup_rendering :: proc() {
@@ -207,13 +232,13 @@ setup_rendering :: proc() {
 	raylib.ToggleFullscreen()
 	for !raylib.IsWindowFullscreen() {}
 }
-setup_game :: proc() -> (level: Level, camera: Camera) {
+setup_game :: proc(arena: ^virtual.Arena) -> (level: Level, camera: Camera, thing_pool: ThingPool) {
 	// setup level
-	level.size = {121, 50}
+	level.size = {201, 111}
 	level.data = make([]TileKind, level.size.x * level.size.y)
 	// checker
 	for tile, idx in level.data {
-		level.data[idx] = TileKind(idx % 2)
+		level.data[idx] = TileKind((pos_from_idx(level, u64(idx)).x + pos_from_idx(level, u64(idx)).y) % 2)
 	}
 
 	// setup camera
@@ -224,29 +249,38 @@ setup_game :: proc() -> (level: Level, camera: Camera) {
 			f32(raylib.GetRenderHeight()) / f32(level.size.y),
 		),
 	}
-	return level, camera
+
+  // setup things
+  init_things(arena, &thing_pool, 10)
+  push_thing(&thing_pool, fast_dot(level))
+	return level, camera, thing_pool
 }
 
 main :: proc() {
-  lifelong: virtual.Arena
-  virtual.arena_init_static(lifelong, 1 * mem.Megabyte)
-  scratch: virtual.Arena
-  virtual.arena_init_static(scratch, 1 * mem.Megabyte)
-  frame: virtual.Arena
-  virtual.arena_init_static(frame, 1 * mem.Megabyte)
+	lifelong: virtual.Arena = {}
+	err: runtime.Allocator_Error = {}
+	err = virtual.arena_init_static(&lifelong, 1 * mem.Megabyte)
+	assert(err == .None)
+	scratch: virtual.Arena = {}
+	err = virtual.arena_init_static(&scratch, 1 * mem.Megabyte)
+	assert(err == .None)
+	frame: virtual.Arena = {}
+	err = virtual.arena_init_static(&frame, 1 * mem.Megabyte)
+	assert(err == .None)
 
 
 	setup_rendering()
-	level, camera := setup_game()
+	level, camera, things := setup_game(&lifelong)
 
 
-  // game stuff
-  for !raylib.WindowShouldClose() {
-    // game loop
+	// game stuff
+	for !raylib.WindowShouldClose() {
+		// game loop
 		// rendering (TODO) section this off into a different loop
-  	raylib.BeginDrawing()
-  	raylib.ClearBackground(raylib.LIGHTGRAY)
-  	draw_level(level, camera)
+		raylib.BeginDrawing()
+		raylib.ClearBackground(raylib.LIGHTGRAY)
+		draw_level(level, camera)
+    draw_things(&things, camera)
 		raylib.EndDrawing()
 	}
 	raylib.CloseWindow()

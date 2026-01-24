@@ -1,0 +1,75 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXFileReference section */
+		EAA52FEC2F254EF00085A52B /* Quicky.odin */ = {isa = PBXFileReference; lastKnownFileType = text; path = Quicky.odin; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		EAA52FE52F254BFF0085A52B = {
+			isa = PBXGroup;
+			children = (
+				EAA52FEC2F254EF00085A52B /* Quicky.odin */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXProject section */
+		EAA52FE62F254BFF0085A52B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1610;
+			};
+			buildConfigurationList = EAA52FE92F254BFF0085A52B /* Build configuration list for PBXProject "QuickyXcode" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = EAA52FE52F254BFF0085A52B;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+			);
+		};
+/* End PBXProject section */
+
+/* Begin XCBuildConfiguration section */
+		EAA52FEA2F254BFF0085A52B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		EAA52FEB2F254BFF0085A52B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		EAA52FE92F254BFF0085A52B /* Build configuration list for PBXProject "QuickyXcode" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EAA52FEA2F254BFF0085A52B /* Debug */,
+				EAA52FEB2F254BFF0085A52B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = EAA52FE62F254BFF0085A52B /* Project object */;
+}
