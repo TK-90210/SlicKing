@@ -221,7 +221,13 @@ set_thing :: proc(
 	generation: u32 = thing_pool.generations[thing_idx.idx]
 	successful = check_idx(thing_pool, thing_idx)
 	if successful {
-		thing_pool.thing[thing_idx.idx] = thing
+    fmt.printfln("%p", &(thing_pool.thing[thing_idx.idx].draw_thing))
+    thing_pool.thing[thing_idx.idx].draw_thing = thing.draw_thing
+    fmt.printfln("%p", thing_pool.thing[thing_idx.idx].draw_thing)
+		thing_pool.thing[thing_idx.idx].velocity = thing.velocity
+		thing_pool.thing[thing_idx.idx].pos = thing.pos
+		thing_pool.thing[thing_idx.idx].level = thing.level
+		thing_pool.thing[thing_idx.idx].flags = thing.flags
 	} else {
 		when STOP_ON_MISMATCHED_GENERATION_TAGS {
 			panic("thing is out of date")
@@ -496,14 +502,12 @@ setup_game :: proc(
 	init_things(arena, &prev_things, 10)
 	init_things(arena, &things, 10)
 	init_things(arena, &next_things, 10)
-	push_thing(&prev_game.things, fast_dot(level))
-	push_thing(&game_state.things, fast_dot(level))
-  fmt.println(game_state.things.free[0])
-  fmt.println(arena.total_used)
-	push_thing(&prev_game.things, fast_mouse(level))
-  fmt.println(arena.total_used)
-  fmt.println(game_state.things.free[0])
-	push_thing(&game_state.things, fast_mouse(level))
+	push_thing(&prev_things, fast_dot(level))
+	push_thing(&things, fast_dot(level))
+  fmt.println((&things).free)
+  fmt.printfln("%p - messed up byte", things.free)
+	push_thing(&prev_things, fast_mouse(level))
+	push_thing(&things, fast_mouse(level))
 	prev_game.things = prev_things
 	game_state.things = things
 	next_game.things = next_things

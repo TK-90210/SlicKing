@@ -7,32 +7,32 @@
       <BreakpointProxy
          BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
          <BreakpointContent
-            uuid = "D0E76652-4F05-496E-83D9-2F022997328B"
+            uuid = "CA360DB4-12DB-437D-AE22-8A0425E2E58E"
             shouldBeEnabled = "Yes"
             ignoreCount = "0"
             continueAfterRunningActions = "No"
             filePath = "Quicky.odin"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "224"
-            endingLineNumber = "224"
-            landmarkName = "set_thing :: proc(ThingPool, ThingIdx, Thing)"
+            startingLineNumber = "509"
+            endingLineNumber = "509"
+            landmarkName = "setup_game :: proc(Arena)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
       <BreakpointProxy
          BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
          <BreakpointContent
-            uuid = "704C7E9C-A174-40F7-B141-89F123B59203"
+            uuid = "A549C12B-6080-49BE-96B8-603CCD8C96FB"
             shouldBeEnabled = "Yes"
             ignoreCount = "0"
             continueAfterRunningActions = "No"
             filePath = "Quicky.odin"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "503"
-            endingLineNumber = "503"
-            landmarkName = "setup_game :: proc(Arena)"
+            startingLineNumber = "227"
+            endingLineNumber = "227"
+            landmarkName = "set_thing :: proc(ThingPool, ThingIdx, Thing)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>
