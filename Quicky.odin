@@ -490,12 +490,12 @@ setup_game :: proc(
 	next_game.camera = camera
 
 	// setup things
-	prev_game.things = {}
-	game_state.things = {}
-	next_game.things = {}
-	init_things(arena, &(prev_game.things), 10)
-	init_things(arena, &(game_state.things), 10)
-	init_things(arena, &(next_game.things), 10)
+  prev_things: ThingPool = {}
+  things: ThingPool = {}
+  next_things: ThingPool = {}
+	init_things(arena, &prev_things, 10)
+	init_things(arena, &things, 10)
+	init_things(arena, &next_things, 10)
 	push_thing(&prev_game.things, fast_dot(level))
 	push_thing(&game_state.things, fast_dot(level))
   fmt.println(game_state.things.free[0])
@@ -504,6 +504,9 @@ setup_game :: proc(
   fmt.println(arena.total_used)
   fmt.println(game_state.things.free[0])
 	push_thing(&game_state.things, fast_mouse(level))
+	prev_game.things = prev_things
+	game_state.things = things
+	next_game.things = next_things
 	return prev_input, input_state, prev_game, game_state, next_game
 }
 
