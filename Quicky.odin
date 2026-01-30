@@ -3,13 +3,14 @@ import "base:runtime"
 import "core:fmt"
 import "core:math"
 import "core:math/linalg"
+import "core:math/rand"
 import "core:mem"
 import "core:mem/virtual"
 import "vendor:raylib"
 
 // compiler flags //
 STOP_ON_MISMATCHED_GENERATION_TAGS :: true
-STOP_ON_POOL_OVERFLOW :: true
+STOP_ON_POOL_OVERFLOW :: false
 
 // Generic Data Structures //
 // linked lists
@@ -25,6 +26,7 @@ Segment :: struct {
 	start: [2]f32,
 	end:   [2]f32,
 }
+similarity :: linalg.vector_dot
 
 // Tiles //
 Tile :: struct {
@@ -68,7 +70,7 @@ pos_from_idx :: proc(level: Level, idx: CellIdx) -> (pos: CellPos, in_bounds: bo
 idx_from_pos :: proc(level: Level, pos: CellPos) -> (idx: CellIdx, in_bounds: bool) {
 	pos64: [2]i64 = linalg.to_i64(pos)
 	idx = pos64.y * i64(level.size.x) + pos64.x
-	in_bounds = 0 <= idx && idx < i64(len(level.size))
+	in_bounds = 0 <= pos.x && pos.x < i32(level.size.x) && 0 <= pos.y && pos.y < i32(level.size.y)
 	return idx, in_bounds
 }
 
@@ -85,8 +87,16 @@ get_tile_idx :: proc(level: Level, idx: CellIdx) -> (tile: Tile, kind: TileKind)
 	return tile, kind
 }
 get_tile_pos :: proc(level: Level, pos: CellPos) -> (tile: Tile, kind: TileKind) {
-	idx, in_bounds := idx_from_pos(level, pos)
-	return get_tile_idx(level, idx)
+	idx, bounds := idx_from_pos(level, pos)
+	easy_tiles: [TileKind]Tile = easy_tiles
+	if bounds {
+		kind = level.data[idx]
+		tile = easy_tiles[kind]
+	} else {
+		kind = .outside
+		tile = easy_tiles[kind]
+	}
+	return tile, kind
 }
 get_tile :: proc {
 	get_tile_idx,
@@ -139,9 +149,11 @@ ThingFlags :: bit_set[enum {
 	ignores_level,
 }]
 Thing :: struct {
-	pos:        [2]f32,
-	velocity:   [2]f32,
-	level:      Level,
+	pos:        [2]f32, // 8 bytes
+	velocity:   [2]f32, // 8 bytes
+  size: f32,
+	//on_corners: Corners,
+	level:      Level, // 
 	flags:      ThingFlags,
 	draw_thing: proc(thing: Thing, camera: Camera),
 }
@@ -151,13 +163,16 @@ nil_thing :: proc() -> Thing {
 	return thing
 }
 // EASY THINGS //
-easy_dot :: proc(level: Level) -> Thing {
+easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 	thing: Thing = {
-		level_center(level), // pos
-		{15., -50.}, // velocity
+		start, // pos
+		velocity, // velocity
+		//calc_point_corners(level, start), // on_corners
+    0, // size of a point is 0
 		level, // level
 		{.does_gravity}, // flags
 		proc(thing: Thing, camera: Camera) {
+			//raylib.DrawText(fmt.caprint(thing.pos), 400, 50, 16, raylib.BLACK)
 			raylib.DrawCircleV(
 				world_to_screenspace(thing.pos, camera),
 				1. * camera.zoom,
@@ -165,15 +180,20 @@ easy_dot :: proc(level: Level) -> Thing {
 			)
 		}, // draw_thing
 	}
+	//if thing.on_corners == walls[.problem_brtl] || thing.on_corners == walls[.problem_bltr] {
+	//thing.on_corners += walls[.down]
+	//}
 
 	return thing
 }
 easy_mouse :: proc(level: Level) -> (thing: Thing) {
 	thing = {
-		{0, 0},
-		{0, 0},
-		level,
-		{.move_with_mouse, .ignores_level},
+		{0, 0}, // position
+		{0, 0}, // velocity
+    0,
+		//{}, // on corners
+		level, // level
+		{.move_with_mouse, .ignores_level}, // flags
 		proc(thing: Thing, camera: Camera) {
 			screenspace_coords: [2]f32 = world_to_screenspace(thing.pos, camera)
 			raylib.DrawText(fmt.caprint(screenspace_coords), 100, 50, 16, raylib.BLACK)
@@ -196,8 +216,8 @@ check_idx :: proc(things: ^ThingPool, idx: ThingIdx) -> bool {
 }
 ThingPool :: struct {
 	offset:      u32,
-	generations: []u32,
-	free:        []bool,
+	generations: []u32, // 4 bytes
+	free:        []bool, // 1 byte
 	thing:       #soa[]Thing,
 }
 init_things :: proc(arena: ^virtual.Arena, thing_pool: ^ThingPool, count: u32) {
@@ -257,6 +277,10 @@ push_things :: proc(
 	when STOP_ON_POOL_OVERFLOW {
 		if !successful {
 			panic("pool is out of memory")
+		}
+	} else {
+		if !successful {
+			return {}, successful
 		}
 	}
 	starting_idx.idx = thing_pool.offset
@@ -323,7 +347,7 @@ move_with_mouse: Task : proc(
 		if .move_with_mouse in thing.flags {
 			mouse_strength :: 5.
 			new_thing.velocity = input.mouse_delta * mouse_strength
-			fmt.println(new_thing.pos)
+			//fmt.println(new_thing.pos)
 
 			set_thing(next_things, idx, new_thing)
 		}
@@ -352,6 +376,131 @@ do_gravity: Task : proc(
 		set_thing(next_things, idx, new_thing)
 	}
 }
+
+point_cast_tiled :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> f32 {
+	mag: f32 = linalg.length(velocity)
+	//re: = { x: cos(rdAngle) * mag + ro.x, y: sin(rdAngle) * mag + ro.y}
+	dir: [2]f32 = linalg.normalize(velocity)
+	step: [2]i32 = linalg.to_i32(linalg.sign(dir))
+
+	cell: [2]i32 = linalg.to_i32(start)
+
+	rayUnitStepSize: [2]f32 = {
+		linalg.sqrt(1 + (dir.y / dir.x) * (dir.y / dir.x)),
+		linalg.sqrt(1 + (dir.x / dir.y) * (dir.x / dir.y)),
+	}
+
+	rayLength: [2]f32 = {0, 0}
+	fract: [2]f32 = start - linalg.to_f32(cell)
+	if (dir.x < 0) {
+		rayLength.x = fract.x * rayUnitStepSize.x
+	} else {
+		rayLength.x = (1 - fract.x) * rayUnitStepSize.x
+	}
+
+	if (dir.y < 0) {
+		rayLength.y = fract.y * rayUnitStepSize.y
+	} else {
+		rayLength.y = (1 - fract.y) * rayUnitStepSize.y
+	}
+
+	len: f32 = min(rayLength.x, rayLength.y)
+	prev_len: f32 = 0
+	collision_point: [2]f32 = start + velocity
+	for ; len < mag + 1; len = min(rayLength.x, rayLength.y) {
+		if _, kind := get_tile(level, cell); kind != .air {
+			//rc = {ro.x + pl * rd.x, ro.y + pl * rd.y}
+			break
+		}
+
+		if (rayLength.x < rayLength.y) {
+			cell.x += step.x
+			rayLength.x += rayUnitStepSize.x
+			prev_len = len
+		} else {
+			cell.y += step.y
+			rayLength.y += rayUnitStepSize.y
+			prev_len = len
+		}
+	}
+  prev_len = min(prev_len, mag)
+	return prev_len
+}
+
+Corner :: enum u8 {
+	bottom_left,
+	bottom_right,
+	top_right,
+	top_left,
+}
+Corners :: bit_set[Corner]
+Wall :: enum {
+	none,
+	down,
+	up,
+	right,
+	left,
+	all,
+	problem_brtl,
+	problem_bltr,
+}
+walls: [Wall]Corners : {
+	.none = {},
+	.down = {.bottom_left, .bottom_right},
+	.up = {.top_left, .top_right},
+	.right = {.bottom_right, .top_right},
+	.left = {.bottom_left, .top_left},
+	.all = {.bottom_right, .bottom_left, .top_right, .top_left},
+	.problem_brtl = {.bottom_right, .top_left},
+	.problem_bltr = {.top_right, .bottom_left},
+}
+
+
+calc_point_corners :: proc(level: Level, pos: [2]f32) -> (corners: Corners) {
+	pos: [2]f32 = pos
+	fract: [2]f32 = linalg.fract(pos)
+	corners = walls[.none]
+	if fract == {0, 0} {
+		bottom_right: [2]i32 = linalg.to_i32(pos)
+		bottom_left: [2]i32 = bottom_right + {-1, 0}
+		top_right: [2]i32 = bottom_right + {0, -1}
+		top_left: [2]i32 = bottom_right + {-1, -1}
+
+		_, kind := get_tile(level, bottom_right)
+		if kind != .air {corners += {.bottom_right}}
+		_, kind = get_tile(level, bottom_left)
+		if kind != .air {corners += {.bottom_left}}
+		_, kind = get_tile(level, top_left)
+		if kind != .air {corners += {.top_left}}
+		_, kind = get_tile(level, top_right)
+		if kind != .air {corners += {.top_right}}
+		return corners
+	}
+	if fract.x == 0 {
+		right: [2]i32 = linalg.to_i32(pos)
+		left: [2]i32 = right + {-1, 0}
+		_, kind := get_tile(level, right)
+		if kind != .air {corners += walls[.right]}
+		_, kind = get_tile(level, left)
+		if kind != .air {corners += walls[.left]}
+		return corners
+	}
+	if fract.y == 0 {
+		down: [2]i32 = linalg.to_i32(pos)
+		up: [2]i32 = down + {0, -1}
+		_, kind := get_tile(level, down)
+		if kind != .air {corners += walls[.down]}
+		_, kind = get_tile(level, up)
+		if kind != .air {corners += walls[.up]}
+		return corners
+	}
+	return corners
+}
+// we'll just do this for now
+calc_bump_length :: proc(thing: Thing) -> f32 {
+  // for now we'll just assume that thing is a circle or point (circle with size of 0)
+  return 1. - thing.size / 2
+}
 move: Task : proc(
 	prev_game: ^GameState,
 	game_state: ^GameState,
@@ -369,62 +518,59 @@ move: Task : proc(
 	new_thing, success = get_thing(next_things, idx)
 	if success && thing.velocity != {0, 0} {
 		velocity := thing.velocity * input.delta_time
-		intersection_kind: TileKind = .air
+		pos: [2]f32 = thing.pos
 		if .ignores_level not_in thing.flags {
+			// MOVE //
 			// https://youtu.be/NbSee-XM7WA?si=AUetUTj1sKyZmTBY
-			// move_and_collide_with_level
-			start: [2]f32 = thing.pos
-			cell: CellPos = linalg.to_i32(start)
-			step_dir: [2]i32 = {}
-			dx: f32 = velocity.x
-			dy: f32 = velocity.y
-			scalar: [2]f32 = {
-				math.sqrt(1 + (dy * dy) / (dx * dx)),
-				math.sqrt(1 + (dx * dx) / (dy * dy)),
-			}
-			Sx: f32 = scalar.x
-			Sy: f32 = scalar.y
-			split_length: [2]f32 = {}
-
-			if dx < 0 {
-				step_dir.x = -1
-				split_length.x = (start.x - f32(cell.x)) * Sx
-			} else {
-				step_dir.x = 1
-				split_length.x = (f32(cell.x + 1) - start.x) * Sx
-			}
-			if dy < 0 {
-				step_dir.y = -1
-				split_length.y = (start.y - f32(cell.y)) * Sy
-			} else {
-				step_dir.y = 1
-				split_length.y = (f32(cell.y) - start.y) * Sy
-			}
-			traveled_distance: f32 = 0
-			for cell != linalg.to_i32(start + velocity) {
-				if split_length.x < split_length.y {
-					cell.x += step_dir.x
-					traveled_distance = split_length.x
-					split_length.x += Sx
-					if _, intersection_kind = get_tile(thing.level, cell);
-					   intersection_kind != .air {
-						velocity = linalg.normalize(velocity) * traveled_distance
-						break
-					}
+			len: f32 = point_cast_tiled(thing.level, pos, velocity)
+			pos = pos + len
+			corners: Corners = calc_point_corners(thing.level, pos)
+			if corners == walls[.problem_brtl] {
+				if velocity.x > 0 || velocity.y < 0 {
+					corners += {.top_right}
 				} else {
-					cell.y += step_dir.y
-					traveled_distance = split_length.y
-					split_length.y += Sy
-					if _, intersection_kind = get_tile(thing.level, cell);
-					   intersection_kind != .air {
-						velocity = linalg.normalize(velocity) * traveled_distance
-						break
-					}
+					corners += {.bottom_left}
+				}
+			}
+			if corners == walls[.problem_bltr] {
+				if velocity.x > 0 || velocity.y > 0 {
+					corners += {.bottom_right}
+				} else {
+					corners += {.top_left}
 				}
 			}
 		}
-		new_thing.pos = thing.pos + velocity
+		new_thing.pos = pos + velocity
 		set_thing(next_things, idx, new_thing)
+	}
+}
+spawn_dot_on_click: Task : proc(
+	prev_game: ^GameState,
+	game_state: ^GameState,
+	next_game: ^GameState,
+	prev_input: InputState,
+	input: InputState,
+	idx: ThingIdx,
+) {
+	things: ^ThingPool = &(game_state.things)
+	next_things: ^ThingPool = &(next_game.things)
+	thing: Thing
+	new_thing: Thing
+	success: bool
+	thing, success = get_thing(things, idx)
+	new_thing, success = get_thing(next_things, idx)
+
+	if .move_with_mouse in thing.flags {
+		if .left_mouse in input.pressed_buttons {
+			push_thing(
+				next_things,
+				easy_dot(
+					game_state.level,
+					thing.pos,
+					linalg.normalize([2]f32{f32(input.random), transmute(f32)(input.random)}) * 30,
+				),
+			)
+		}
 	}
 }
 
@@ -477,19 +623,36 @@ resolve_things :: proc(
 	resolve_task(prev_game, game_state, next_game, prev_input, input, move_with_mouse)
 	resolve_task(prev_game, game_state, next_game, prev_input, input, do_gravity)
 	resolve_task(prev_game, game_state, next_game, prev_input, input, move)
+	resolve_task(prev_game, game_state, next_game, prev_input, input, spawn_dot_on_click)
 }
 
 // Input State
+GameButton :: enum {
+	left_mouse,
+}
+GameButtons :: bit_set[GameButton]
 InputState :: struct {
 	// must be smol
-	delta_time:  f32, // 4 bytes
-	mouse_delta: [2]f32, // 8 bytes
+	delta_time:      f32, // 4 bytes
+	mouse_delta:     [2]f32, // 8 bytes
+	pressed_buttons: GameButtons,
+	random:          u32,
 }
 estimate_max_runtime :: #force_inline proc(memory: int) -> (time_m: int) {
 	return memory / (size_of(InputState) * 60 * 60)
 }
 get_input_state :: proc() -> InputState {
-	return {raylib.GetFrameTime(), raylib.GetMouseDelta()}
+	pressed_buttons: GameButtons = {}
+	if raylib.IsMouseButtonDown(raylib.MouseButton.LEFT) {
+		pressed_buttons += {.left_mouse}
+	}
+	return {
+		1. / 60.,
+		//raylib.GetFrameTime(),
+		raylib.GetMouseDelta(),
+		pressed_buttons,
+		rand.uint32(),
+	}
 }
 // Game State
 GameState :: struct {
@@ -556,7 +719,7 @@ setup_game :: proc(
 		zoom = min(
 			f32(raylib.GetRenderWidth()) / f32(level.size.x),
 			f32(raylib.GetRenderHeight()) / f32(level.size.y),
-		),
+		) * .9,
 	}
 	prev_game.camera = camera
 	game_state.camera = camera
@@ -566,11 +729,12 @@ setup_game :: proc(
 	prev_things: ThingPool = {}
 	things: ThingPool = {}
 	next_things: ThingPool = {}
-	init_things(arena, &prev_things, 10)
-	init_things(arena, &things, 10)
-	init_things(arena, &next_things, 10)
-	push_thing(&prev_things, easy_dot(level))
-	push_thing(&things, easy_dot(level))
+	thing_count :: 3000
+	init_things(arena, &prev_things, thing_count)
+	init_things(arena, &things, thing_count)
+	init_things(arena, &next_things, thing_count)
+	push_thing(&prev_things, easy_dot(level, level_center(level), {-30, -30}))
+	push_thing(&things, easy_dot(level, level_center(level), {-30, -30}))
 	push_thing(&prev_things, easy_mouse(level))
 	push_thing(&things, easy_mouse(level))
 	prev_game.things = prev_things
@@ -581,6 +745,7 @@ setup_game :: proc(
 
 main :: proc() {
 	fmt.println(estimate_max_runtime(mem.Megabyte), "minutes")
+	fmt.println(size_of(Thing) + 4 + 1)
 	//crash: ^virtual.Arena
 	lifelong: virtual.Arena = {}
 	err: runtime.Allocator_Error = {}
@@ -597,12 +762,15 @@ main :: proc() {
 	setup_rendering()
 	prev_input, input_state, prev_game, game_state, next_game := setup_game(&lifelong)
 
+	/*
 	for !raylib.IsKeyDown(raylib.KeyboardKey.SPACE) {
 		raylib.BeginDrawing()
 		raylib.ClearBackground(raylib.LIGHTGRAY)
+		raylib.DrawFPS(raylib.GetRenderWidth() - 100, 50)
 		draw_game(game_state)
 		raylib.EndDrawing()
 	}
+  */
 
 	// game stuff
 	for !raylib.WindowShouldClose() {
@@ -610,6 +778,14 @@ main :: proc() {
 		// rendering (TODO) section this off into a different loop
 		raylib.BeginDrawing()
 		raylib.ClearBackground(raylib.LIGHTGRAY)
+		raylib.DrawFPS(raylib.GetRenderWidth() - 100, 50)
+		raylib.DrawText(
+			fmt.caprint(game_state.things.offset),
+			i32(raylib.GetRenderWidth() / 2),
+			50,
+			16,
+			raylib.BLACK,
+		)
 		draw_game(game_state)
 		raylib.EndDrawing()
 
