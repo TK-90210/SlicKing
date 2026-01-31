@@ -146,12 +146,13 @@ ThingFlags :: bit_set[enum {
 	does_gravity,
 	move_with_mouse,
 	can_go_outside_level,
-	ignores_level,
+	ignore_level,
 }]
 Thing :: struct {
 	pos:        [2]f32, // 8 bytes
 	velocity:   [2]f32, // 8 bytes
-  size: f32,
+	size:       f32,
+	on_wall:    Walls,
 	//on_corners: Corners,
 	level:      Level, // 
 	flags:      ThingFlags,
@@ -168,7 +169,8 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 		start, // pos
 		velocity, // velocity
 		//calc_point_corners(level, start), // on_corners
-    0, // size of a point is 0
+		0, // size of a point is 0
+		{}, // on_wall
 		level, // level
 		{.does_gravity}, // flags
 		proc(thing: Thing, camera: Camera) {
@@ -188,16 +190,28 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 }
 easy_mouse :: proc(level: Level) -> (thing: Thing) {
 	thing = {
-		{0, 0}, // position
+		level_center(level), // position
 		{0, 0}, // velocity
-    0,
+		0,
 		//{}, // on corners
+		{}, // on_wall
 		level, // level
-		{.move_with_mouse, .ignores_level}, // flags
+		{.move_with_mouse}, // flags
 		proc(thing: Thing, camera: Camera) {
 			screenspace_coords: [2]f32 = world_to_screenspace(thing.pos, camera)
 			raylib.DrawText(fmt.caprint(screenspace_coords), 100, 50, 16, raylib.BLACK)
+			raylib.DrawText(
+				fmt.caprint(thing.on_wall),
+				i32(raylib.GetRenderWidth() / 3),
+				50,
+				16,
+				raylib.BLACK,
+			)
+      if .ignore_level in thing.flags {
 			raylib.DrawCircleV(screenspace_coords, 1. * camera.zoom, raylib.RED)
+      } else {
+			raylib.DrawCircleV(screenspace_coords, 1. * camera.zoom, raylib.GREEN)
+      }
 		}, // draw_thing
 	}
 	return thing
@@ -253,11 +267,7 @@ set_thing :: proc(
 	generation: u32 = thing_pool.generations[thing_idx.idx]
 	successful = check_idx(thing_pool, thing_idx)
 	if successful {
-		thing_pool.thing[thing_idx.idx].draw_thing = thing.draw_thing
-		thing_pool.thing[thing_idx.idx].velocity = thing.velocity
-		thing_pool.thing[thing_idx.idx].pos = thing.pos
-		thing_pool.thing[thing_idx.idx].level = thing.level
-		thing_pool.thing[thing_idx.idx].flags = thing.flags
+		thing_pool.thing[thing_idx.idx] = thing
 	} else {
 		when STOP_ON_MISMATCHED_GENERATION_TAGS {
 			panic("thing is out of date")
@@ -316,6 +326,9 @@ draw_things :: proc(thing_pool: ^ThingPool, camera: Camera) {
 		thing, successful := get_thing(thing_pool, idx)
 		assert(successful)
 		thing.draw_thing(thing, camera)
+    if i == thing_pool.offset - 1 {
+      raylib.DrawText(fmt.caprint(thing.velocity), i32(f32(raylib.GetRenderWidth()) * 0.75), 50, 16, raylib.BLACK)
+    }
 	}
 }
 
@@ -370,14 +383,28 @@ do_gravity: Task : proc(
 	thing, success = get_thing(things, idx)
 	new_thing, success = get_thing(next_things, idx)
 	if success {
-		if .does_gravity in thing.flags {
+		if .does_gravity in thing.flags && .south not_in thing.on_wall {
 			new_thing.velocity.y = thing.velocity.y + gravity_strength * input.delta_time
 		}
 		set_thing(next_things, idx, new_thing)
 	}
 }
 
-point_cast_tiled :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> f32 {
+Wall :: enum {
+	north,
+	east,
+	south,
+	west,
+}
+Walls :: bit_set[Wall]
+point_cast_tiled :: proc(
+	level: Level,
+	start: [2]f32,
+	velocity: [2]f32,
+) -> (
+	length: f32,
+	hit: Walls,
+) {
 	mag: f32 = linalg.length(velocity)
 	//re: = { x: cos(rdAngle) * mag + ro.x, y: sin(rdAngle) * mag + ro.y}
 	dir: [2]f32 = linalg.normalize(velocity)
@@ -404,12 +431,19 @@ point_cast_tiled :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> f32 {
 		rayLength.y = (1 - fract.y) * rayUnitStepSize.y
 	}
 
-	len: f32 = min(rayLength.x, rayLength.y)
+	possible_walls: [2]Wall = {.west if step.x < 0 else .east, .north if step.y < 0 else .south}
+	len: f32 = rayLength.y
+	possible_hit: Walls = {possible_walls.y}
+	if rayLength.x < rayLength.y {
+		len = rayLength.x
+		possible_hit = {possible_walls.x}
+	}
 	prev_len: f32 = 0
-	collision_point: [2]f32 = start + velocity
+	hit = {}
 	for ; len < mag + 1; len = min(rayLength.x, rayLength.y) {
 		if _, kind := get_tile(level, cell); kind != .air {
 			//rc = {ro.x + pl * rd.x, ro.y + pl * rd.y}
+			hit = possible_hit
 			break
 		}
 
@@ -417,17 +451,21 @@ point_cast_tiled :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> f32 {
 			cell.x += step.x
 			rayLength.x += rayUnitStepSize.x
 			prev_len = len
+			possible_hit = {possible_walls.x}
+
 		} else {
 			cell.y += step.y
 			rayLength.y += rayUnitStepSize.y
 			prev_len = len
+			possible_hit = {possible_walls.y}
 		}
 	}
-  prev_len = min(prev_len, mag)
-	return prev_len
+	prev_len = min(prev_len, mag)
+	length = prev_len
+	return length, hit
 }
 
-Corner :: enum u8 {
+/*Corner :: enum u8 {
 	bottom_left,
 	bottom_right,
 	top_right,
@@ -453,10 +491,10 @@ walls: [Wall]Corners : {
 	.all = {.bottom_right, .bottom_left, .top_right, .top_left},
 	.problem_brtl = {.bottom_right, .top_left},
 	.problem_bltr = {.top_right, .bottom_left},
-}
+}*/
 
 
-calc_point_corners :: proc(level: Level, pos: [2]f32) -> (corners: Corners) {
+/*calc_point_corners :: proc(level: Level, pos: [2]f32) -> (corners: Corners) {
 	pos: [2]f32 = pos
 	fract: [2]f32 = linalg.fract(pos)
 	corners = walls[.none]
@@ -495,11 +533,84 @@ calc_point_corners :: proc(level: Level, pos: [2]f32) -> (corners: Corners) {
 		return corners
 	}
 	return corners
-}
+}*/
 // we'll just do this for now
-calc_bump_length :: proc(thing: Thing) -> f32 {
-  // for now we'll just assume that thing is a circle or point (circle with size of 0)
-  return 1. - thing.size / 2
+bump_point_away_from_walls :: proc(
+	level: Level,
+	pos: [2]f32,
+	bump_radius: f32,
+) -> (
+	out_pos: [2]f32,
+) {
+	out_pos = pos
+	cell: CellPos = linalg.to_i32(pos)
+	fract: [2]f32 = linalg.fract(pos)
+	wall_dirs :: enum {
+		north,
+		east,
+		south,
+		west,
+	}
+	wall_cells: [wall_dirs][2]i32 = {
+		.north = {0, -1},
+		.east  = {1, 0},
+		.south = {0, 1},
+		.west  = {-1, 0},
+	}
+	wall_points: [wall_dirs][2]f32 = {
+		.north = {fract.x, 0.},
+		.east  = {1, fract.y},
+		.south = {fract.x, 1},
+		.west  = {0, fract.y},
+	}
+
+	corner_dirs :: enum {
+		north_west,
+		north_east,
+		south_east,
+		south_west,
+	}
+	corner_cells: [corner_dirs][2]i32 = {
+		.north_west = {-1, -1},
+		.north_east = {1, -1},
+		.south_east = {1, 1},
+		.south_west = {-1, 1},
+	}
+	corner_points: [corner_dirs][2]f32 = {
+		.north_west = {0, 0},
+		.north_east = {1, 0},
+		.south_east = {1, 1},
+		.south_west = {0, 1},
+	}
+
+
+	wall_bump: [2]f32 = {0, 0}
+	for wall in wall_dirs {
+		if _, kind := get_tile_pos(level, cell + wall_cells[wall]); kind != .air {
+			wall_point_to_fract: [2]f32 = fract - wall_points[wall]
+			len: f32 = max(bump_radius - linalg.length(wall_point_to_fract), 0)
+			dir: [2]f32 = linalg.normalize(wall_point_to_fract)
+			wall_bump += len * dir
+		}
+	}
+	out_pos += wall_bump
+
+
+	cell = linalg.to_i32(out_pos)
+	fract = linalg.fract(out_pos)
+
+	corner_bump: [2]f32 = {0, 0}
+	for corner in corner_dirs {
+		if _, kind := get_tile_pos(level, cell + corner_cells[corner]); kind != .air {
+			corner_point_to_fract: [2]f32 = fract - corner_points[corner]
+			len: f32 = max(bump_radius - linalg.length(corner_point_to_fract), 0)
+			dir: [2]f32 = linalg.normalize(corner_point_to_fract)
+			corner_bump += len * dir
+		}
+	}
+
+	out_pos += corner_bump
+	return out_pos
 }
 move: Task : proc(
 	prev_game: ^GameState,
@@ -517,31 +628,70 @@ move: Task : proc(
 	thing, success = get_thing(things, idx)
 	new_thing, success = get_thing(next_things, idx)
 	if success && thing.velocity != {0, 0} {
-		velocity := thing.velocity * input.delta_time
+		velocity := thing.velocity
+    movement: [2]f32 = velocity * input.delta_time
 		pos: [2]f32 = thing.pos
-		if .ignores_level not_in thing.flags {
+		walls: Walls = thing.on_wall
+		if .ignore_level not_in thing.flags {
 			// MOVE //
 			// https://youtu.be/NbSee-XM7WA?si=AUetUTj1sKyZmTBY
-			len: f32 = point_cast_tiled(thing.level, pos, velocity)
-			pos = pos + len
-			corners: Corners = calc_point_corners(thing.level, pos)
-			if corners == walls[.problem_brtl] {
-				if velocity.x > 0 || velocity.y < 0 {
-					corners += {.top_right}
+      cell: CellPos = linalg.to_i32(pos)
+			if .north in thing.on_wall {
+        _, kind := get_tile(thing.level, cell + {0, -1})
+				if velocity.y > 0 || kind == .air {
+					walls -= {.north}
 				} else {
-					corners += {.bottom_left}
+					velocity.y = max(velocity.y, 0)
 				}
 			}
-			if corners == walls[.problem_bltr] {
-				if velocity.x > 0 || velocity.y > 0 {
-					corners += {.bottom_right}
+			if .east in thing.on_wall {
+        _, kind := get_tile(thing.level, cell + {1, 0})
+				if velocity.x < 0 || kind == .air {
+					walls -= {.east}
 				} else {
-					corners += {.top_left}
+					velocity.x = min(velocity.x, 0)
 				}
 			}
+			if .south in thing.on_wall {
+        _, kind := get_tile(thing.level, cell + {0, 1})
+				if velocity.y < 0 || kind == .air {
+					walls -= {.south}
+				} else {
+					velocity.y = min(velocity.y, 0)
+				}
+			}
+			if .west in thing.on_wall {
+        _, kind := get_tile(thing.level, cell + {-1, 0})
+				if velocity.x > 0 || kind == .air {
+					walls -= {.west}
+				} else {
+					velocity.x = max(velocity.x, 0)
+				}
+			}
+      movement = velocity * input.delta_time
+			if movement != {} {
+				len, hit := point_cast_tiled(thing.level, pos, movement)
+				pos = pos + len * linalg.normalize(movement)
+				if .north in hit {
+					pos.y += 0.05
+				}
+				if .east in hit {
+					pos.x -= 0.05
+				}
+				if .south in hit {
+					pos.y -= 0.05
+				}
+				if .west in hit {
+					pos.x += 0.05
+				}
+				walls += hit}
+			movement = pos - thing.pos
 		}
-		new_thing.pos = pos + velocity
+		new_thing.on_wall = walls
+		new_thing.pos = thing.pos + movement
+    new_thing.velocity = velocity
 		set_thing(next_things, idx, new_thing)
+		//fmt.println(next_things.thing[idx.idx].on_wall)
 	}
 }
 spawn_dot_on_click: Task : proc(
@@ -562,16 +712,36 @@ spawn_dot_on_click: Task : proc(
 
 	if .move_with_mouse in thing.flags {
 		if .left_mouse in input.pressed_buttons {
-			push_thing(
-				next_things,
-				easy_dot(
-					game_state.level,
-					thing.pos,
-					linalg.normalize([2]f32{f32(input.random), transmute(f32)(input.random)}) * 30,
-				),
-			)
+			if .ignore_level in thing.flags {
+				cell: CellPos = linalg.to_i32(thing.pos)
+				if idx, in_bounds := idx_from_pos(next_game.level, cell); in_bounds {
+					next_game.level.data[idx] = .ground
+				}
+			} else {
+				rand: f32 = f32(input.random)
+				push_thing(
+					next_things,
+					easy_dot(
+						game_state.level,
+						thing.pos,
+						linalg.normalize([2]f32{linalg.sin(rand), linalg.cos(rand)}) * 30,
+					),
+				)
+			}
+		}
+		if .right_mouse in prev_input.pressed_buttons &&
+		   .right_mouse not_in input.pressed_buttons {
+			cell: CellPos = linalg.to_i32(thing.pos)
+			if .ignore_level in thing.flags {
+				if _, kind := get_tile(game_state.level, cell); kind == .air {
+					new_thing.flags -= {.ignore_level}
+				}
+			} else {
+				new_thing.flags += {.ignore_level}
+			}
 		}
 	}
+	set_thing(next_things, idx, new_thing)
 }
 
 
@@ -629,6 +799,7 @@ resolve_things :: proc(
 // Input State
 GameButton :: enum {
 	left_mouse,
+	right_mouse,
 }
 GameButtons :: bit_set[GameButton]
 InputState :: struct {
@@ -645,6 +816,9 @@ get_input_state :: proc() -> InputState {
 	pressed_buttons: GameButtons = {}
 	if raylib.IsMouseButtonDown(raylib.MouseButton.LEFT) {
 		pressed_buttons += {.left_mouse}
+	}
+	if raylib.IsMouseButtonDown(raylib.MouseButton.RIGHT) {
+		pressed_buttons += {.right_mouse}
 	}
 	return {
 		1. / 60.,
@@ -733,8 +907,8 @@ setup_game :: proc(
 	init_things(arena, &prev_things, thing_count)
 	init_things(arena, &things, thing_count)
 	init_things(arena, &next_things, thing_count)
-	push_thing(&prev_things, easy_dot(level, level_center(level), {-30, -30}))
-	push_thing(&things, easy_dot(level, level_center(level), {-30, -30}))
+	//push_thing(&prev_things, easy_dot(level, level_center(level), {-30, -30}))
+	//push_thing(&things, easy_dot(level, level_center(level), {-30, -30}))
 	push_thing(&prev_things, easy_mouse(level))
 	push_thing(&things, easy_mouse(level))
 	prev_game.things = prev_things
@@ -762,7 +936,6 @@ main :: proc() {
 	setup_rendering()
 	prev_input, input_state, prev_game, game_state, next_game := setup_game(&lifelong)
 
-	/*
 	for !raylib.IsKeyDown(raylib.KeyboardKey.SPACE) {
 		raylib.BeginDrawing()
 		raylib.ClearBackground(raylib.LIGHTGRAY)
@@ -770,7 +943,6 @@ main :: proc() {
 		draw_game(game_state)
 		raylib.EndDrawing()
 	}
-  */
 
 	// game stuff
 	for !raylib.WindowShouldClose() {
