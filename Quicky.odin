@@ -18,6 +18,11 @@ STOP_ON_POOL_OVERFLOW :: false
 // i don't need one yet so ill hold off
 
 // Math Stuff //
+// i can play around with different mass densities if i want
+// aparently water is 1 gram per cubic centimeter and air is 1/800 of water
+drag_force :: proc(fluid_mass_density: f32 = 1./1600., flow_velocity: [2]f32, drag_coefficient: f32, reference_area: f32 = 1.0) -> (drag_force: f32) {
+  return 0.5 * fluid_mass_density * linalg.length(flow_velocity) * linalg.length(flow_velocity) * drag_coefficient * reference_area
+}
 Bounds :: struct {
 	min: [2]f32,
 	max: [2]f32,
@@ -76,6 +81,7 @@ point_cast_tiled :: proc(
 		len = rayLength.x
 		possible_hit = {possible_walls.x}
 	}
+  len = min(len, mag)
 	prev_len: f32 = 0
 	hit = {}
 	for ; len < mag + 1; len = min(rayLength.x, rayLength.y) {
@@ -99,7 +105,10 @@ point_cast_tiled :: proc(
 		}
 	}
 	prev_len = min(prev_len, mag)
-	length = prev_len
+  length = mag
+  if hit != {} {
+    length = prev_len
+  }
 	return length, hit
 }
 bump_point_away_from_walls :: proc(
@@ -184,6 +193,7 @@ bump_point_away_from_walls :: proc(
 Tile :: struct {
 	color: raylib.Color,
 	solid: bool,
+  friction: f32,
 }
 TileKind :: enum u8 {
 	snow,
@@ -195,12 +205,12 @@ TileKind :: enum u8 {
 }
 SetOfTiles :: bit_set[TileKind]
 easy_tiles :: [TileKind]Tile {
-	.dirt = {color = raylib.BROWN, solid = false},
-	.snow = {color = raylib.RAYWHITE, solid = false},
-	.ice = {color = raylib.SKYBLUE, solid = false},
-	.water = {color = raylib.BLUE, solid = false},
-	.wall = {color = raylib.DARKPURPLE, solid = true},
-	.outside = {color = raylib.LIGHTGRAY, solid = true},
+	.dirt = {color = raylib.BROWN, solid = false, friction = 1.5},
+	.snow = {color = raylib.RAYWHITE, solid = false, friction = 1.0},
+	.ice = {color = raylib.SKYBLUE, solid = false, friction = 0.2},
+	.water = {color = raylib.BLUE, solid = false, friction = 0.6},
+	.wall = {color = raylib.DARKPURPLE, solid = true, friction = 1.0},
+	.outside = {color = raylib.LIGHTGRAY, solid = true, friction = 1.0},
 }
 
 // Level //
@@ -321,11 +331,13 @@ ThingFlags :: bit_set[enum {
   moves_with_wasd,
 	can_go_outside_level,
 	ignore_level,
+  ignore_friction,
 }]
 Thing :: struct {
 	pos:        [2]f32, // 8 bytes
 	velocity:   [2]f32, // 8 bytes
   running_strength: f32,
+  drag_coefficient: f32,
 	size:       f32,
 	on_wall:    Walls,
   target: ThingIdx,
@@ -351,6 +363,7 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 		velocity, // velocity
 		//calc_point_corners(level, start), // on_corners
     1, // running_strength
+    1.17, // drag_coefficient https://en.wikipedia.org/wiki/Drag_coefficient
 		0, // size of a point is 0
 		Walls{}, // on_wall
     ThingIdx{}, // target
@@ -377,7 +390,8 @@ easy_slicking :: proc(level: Level, starting_pos: [2]f32, mouse_target: ThingIdx
 	thing = {
 		starting_pos, // position
 		{0, 0}, // velocity
-    100, // running_strength
+    5, // running_strength
+    1.6, // drag_coefficient
 		0, // size
 		Walls{}, // on_wall
     mouse_target, // target
@@ -415,6 +429,7 @@ easy_mouse :: proc(level: Level) -> (thing: Thing) {
 		level_center(level), // position
 		{0, 0}, // velocity
     0, // running_speed
+    0, // drag_coefficient
 		0, // size
 		//{}, // on corners
 		Walls{}, // on_wall
@@ -587,6 +602,13 @@ draw_things :: proc(thing_pool: ^ThingPool, camera: Camera) {
 				16,
 				raylib.BLACK,
 			)
+			raylib.DrawText(
+				fmt.caprint(thing.pos),
+				i32(f32(raylib.GetRenderWidth()) * 0.75),
+				75,
+				16,
+				raylib.BLACK,
+			)
 		}
 	}
 }
@@ -678,14 +700,19 @@ tasks :: [Task]TaskProc {
         //  so if im going up, but then i go left or right, i will drift upwards
         // i think
         delta_vel: [2]f32 = {}
+        tile, _ := get_tile(game.level, linalg.to_i32(thing.pos))
+        friction: f32 = tile.friction
         if linalg.length(wasd_dir) != 0 {
           wasd_dir = wasd_dir / linalg.length(wasd_dir)
-				  delta_vel = wasd_dir * thing.running_strength * input.delta_time
+				  delta_vel = wasd_dir * thing.running_strength * friction * input.delta_time
         } else {
           wasd_dir = linalg.normalize0(-thing.velocity)
-          delta_vel = wasd_dir * min(thing.running_strength * input.delta_time, linalg.length(-thing.velocity))
+          delta_vel = wasd_dir * min(thing.running_strength * friction * input.delta_time, linalg.length(-thing.velocity))
         }
         new_thing.velocity = thing.velocity + delta_vel
+        
+        drag_vector: [2]f32 = linalg.normalize0(thing.velocity) * drag_force(flow_velocity=-thing.velocity, drag_coefficient= thing.drag_coefficient)
+        new_thing.velocity = new_thing.velocity - drag_vector
 				//fmt.println(new_thing.pos)
 
 				set_thing(next_things, idx, new_thing)
@@ -773,22 +800,23 @@ tasks :: [Task]TaskProc {
 					}
 				}
 				movement = velocity * input.delta_time
-				if movement != {} {
-					len, hit := point_cast_tiled(thing.level, pos, movement)
-					pos = pos + len * linalg.normalize(movement)
-					if .north in hit {
-						pos.y += 0.05
-					}
-					if .east in hit {
-						pos.x -= 0.05
-					}
-					if .south in hit {
-						pos.y -= 0.05
-					}
-					if .west in hit {
-						pos.x += 0.05
-					}
-					walls += hit}
+        if movement != {} {
+          len, hit := point_cast_tiled(thing.level, pos, movement)
+          pos = pos + len * linalg.normalize0(movement)
+          if .north in hit {
+            pos.y += 0.05
+          }
+          if .east in hit {
+            pos.x -= 0.05
+          }
+          if .south in hit {
+            pos.y -= 0.05
+          }
+          if .west in hit {
+            pos.x += 0.05
+          }
+          walls += hit
+        }
 				movement = pos - thing.pos
 			}
 			new_thing.on_wall = walls
