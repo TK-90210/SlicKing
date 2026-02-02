@@ -27,6 +27,158 @@ Segment :: struct {
 	end:   [2]f32,
 }
 similarity :: linalg.vector_dot
+// we'll just do this for now
+Wall :: enum {
+	north,
+	east,
+	south,
+	west,
+}
+Walls :: bit_set[Wall]
+point_cast_tiled :: proc(
+	level: Level,
+	start: [2]f32,
+	velocity: [2]f32,
+) -> (
+	length: f32,
+	hit: Walls,
+) {
+	mag: f32 = linalg.length(velocity)
+	//re: = { x: cos(rdAngle) * mag + ro.x, y: sin(rdAngle) * mag + ro.y}
+	dir: [2]f32 = linalg.normalize(velocity)
+	step: [2]i32 = linalg.to_i32(linalg.sign(dir))
+
+	cell: [2]i32 = linalg.to_i32(start)
+
+	rayUnitStepSize: [2]f32 = {
+		linalg.sqrt(1 + (dir.y / dir.x) * (dir.y / dir.x)),
+		linalg.sqrt(1 + (dir.x / dir.y) * (dir.x / dir.y)),
+	}
+
+	rayLength: [2]f32 = {0, 0}
+	fract: [2]f32 = start - linalg.to_f32(cell)
+	if (dir.x < 0) {
+		rayLength.x = fract.x * rayUnitStepSize.x
+	} else {
+		rayLength.x = (1 - fract.x) * rayUnitStepSize.x
+	}
+
+	if (dir.y < 0) {
+		rayLength.y = fract.y * rayUnitStepSize.y
+	} else {
+		rayLength.y = (1 - fract.y) * rayUnitStepSize.y
+	}
+
+	possible_walls: [2]Wall = {.west if step.x < 0 else .east, .north if step.y < 0 else .south}
+	len: f32 = rayLength.y
+	possible_hit: Walls = {possible_walls.y}
+	if rayLength.x < rayLength.y {
+		len = rayLength.x
+		possible_hit = {possible_walls.x}
+	}
+	prev_len: f32 = 0
+	hit = {}
+	for ; len < mag + 1; len = min(rayLength.x, rayLength.y) {
+		if tile, kind := get_tile(level, cell); tile.solid {
+			//rc = {ro.x + pl * rd.x, ro.y + pl * rd.y}
+			hit = possible_hit
+			break
+		}
+
+		if (rayLength.x < rayLength.y) {
+			cell.x += step.x
+			rayLength.x += rayUnitStepSize.x
+			prev_len = len
+			possible_hit = {possible_walls.x}
+
+		} else {
+			cell.y += step.y
+			rayLength.y += rayUnitStepSize.y
+			prev_len = len
+			possible_hit = {possible_walls.y}
+		}
+	}
+	prev_len = min(prev_len, mag)
+	length = prev_len
+	return length, hit
+}
+bump_point_away_from_walls :: proc(
+	level: Level,
+	pos: [2]f32,
+	bump_radius: f32,
+) -> (
+	out_pos: [2]f32,
+) {
+	out_pos = pos
+	cell: CellPos = linalg.to_i32(pos)
+	fract: [2]f32 = linalg.fract(pos)
+	wall_dirs :: enum {
+		north,
+		east,
+		south,
+		west,
+	}
+	wall_cells: [wall_dirs][2]i32 = {
+		.north = {0, -1},
+		.east  = {1, 0},
+		.south = {0, 1},
+		.west  = {-1, 0},
+	}
+	wall_points: [wall_dirs][2]f32 = {
+		.north = {fract.x, 0.},
+		.east  = {1, fract.y},
+		.south = {fract.x, 1},
+		.west  = {0, fract.y},
+	}
+
+	corner_dirs :: enum {
+		north_west,
+		north_east,
+		south_east,
+		south_west,
+	}
+	corner_cells: [corner_dirs][2]i32 = {
+		.north_west = {-1, -1},
+		.north_east = {1, -1},
+		.south_east = {1, 1},
+		.south_west = {-1, 1},
+	}
+	corner_points: [corner_dirs][2]f32 = {
+		.north_west = {0, 0},
+		.north_east = {1, 0},
+		.south_east = {1, 1},
+		.south_west = {0, 1},
+	}
+
+
+	wall_bump: [2]f32 = {0, 0}
+	for wall in wall_dirs {
+		if tile, kind := get_tile_pos(level, cell + wall_cells[wall]); tile.solid {
+			wall_point_to_fract: [2]f32 = fract - wall_points[wall]
+			len: f32 = max(bump_radius - linalg.length(wall_point_to_fract), 0)
+			dir: [2]f32 = linalg.normalize(wall_point_to_fract)
+			wall_bump += len * dir
+		}
+	}
+	out_pos += wall_bump
+
+
+	cell = linalg.to_i32(out_pos)
+	fract = linalg.fract(out_pos)
+
+	corner_bump: [2]f32 = {0, 0}
+	for corner in corner_dirs {
+		if tile, kind := get_tile_pos(level, cell + corner_cells[corner]); tile.solid {
+			corner_point_to_fract: [2]f32 = fract - corner_points[corner]
+			len: f32 = max(bump_radius - linalg.length(corner_point_to_fract), 0)
+			dir: [2]f32 = linalg.normalize(corner_point_to_fract)
+			corner_bump += len * dir
+		}
+	}
+
+	out_pos += corner_bump
+	return out_pos
+}
 
 // Tiles //
 Tile :: struct {
@@ -34,14 +186,20 @@ Tile :: struct {
 	solid: bool,
 }
 TileKind :: enum u8 {
-	air,
-	ground,
+	snow,
+	dirt,
+	ice,
+	water,
+	wall,
 	outside,
 }
 SetOfTiles :: bit_set[TileKind]
 easy_tiles :: [TileKind]Tile {
-	.air = {color = raylib.RAYWHITE, solid = false},
-	.ground = {color = raylib.LIME, solid = true},
+	.dirt = {color = raylib.BROWN, solid = false},
+	.snow = {color = raylib.RAYWHITE, solid = false},
+	.ice = {color = raylib.SKYBLUE, solid = false},
+	.water = {color = raylib.BLUE, solid = false},
+	.wall = {color = raylib.DARKPURPLE, solid = true},
 	.outside = {color = raylib.LIGHTGRAY, solid = true},
 }
 
@@ -102,6 +260,21 @@ get_tile :: proc {
 	get_tile_idx,
 	get_tile_pos,
 }
+set_tile_idx :: proc(level: Level, idx: CellIdx, kind: TileKind) {
+	if 0 <= idx && idx < i64(len(level.data)) {
+		level.data[idx] = kind
+	}
+}
+set_tile_pos :: proc(level: Level, pos: CellPos, kind: TileKind) {
+	idx, bounds := idx_from_pos(level, pos)
+	if bounds {
+		level.data[idx] = kind
+	}
+}
+set_tile :: proc {
+	set_tile_idx,
+	set_tile_pos,
+}
 
 draw_level :: proc(level: Level, current_cam: Camera) {
 	for idx in 0 ..< len(level.data) {
@@ -144,19 +317,27 @@ world_to_screenspace :: proc {
 // Things //
 ThingFlags :: bit_set[enum {
 	does_gravity,
-	move_with_mouse,
+	moves_with_mouse,
+  moves_with_wasd,
 	can_go_outside_level,
 	ignore_level,
 }]
 Thing :: struct {
 	pos:        [2]f32, // 8 bytes
 	velocity:   [2]f32, // 8 bytes
+  running_strength: f32,
 	size:       f32,
 	on_wall:    Walls,
+  target: ThingIdx,
 	//on_corners: Corners,
 	level:      Level, // 
 	flags:      ThingFlags,
+	// (TODO) (SERIALIZATION) probably a good idea to make a procedure array
+	// this way i can store an index instead of a pointer, which is more memory efficient
+	// also if this ever goes multiplayer a hacker can't just plop a pointer to their function in a level
+	// and hack someone's computer with an edited level
 	draw_thing: proc(thing: Thing, camera: Camera),
+	on_click:   TaskProc, // is not a task, it just needs the same signature
 }
 nil_thing :: proc() -> Thing {
 	thing: Thing = {}
@@ -169,8 +350,10 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 		start, // pos
 		velocity, // velocity
 		//calc_point_corners(level, start), // on_corners
+    1, // running_strength
 		0, // size of a point is 0
-		{}, // on_wall
+		Walls{}, // on_wall
+    ThingIdx{}, // target
 		level, // level
 		{.does_gravity}, // flags
 		proc(thing: Thing, camera: Camera) {
@@ -181,6 +364,8 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 				raylib.BLUE,
 			)
 		}, // draw_thing
+		{},
+		//.do_nothing, // on_click
 	}
 	//if thing.on_corners == walls[.problem_brtl] || thing.on_corners == walls[.problem_bltr] {
 	//thing.on_corners += walls[.down]
@@ -188,31 +373,99 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 
 	return thing
 }
+easy_slicking :: proc(level: Level, starting_pos: [2]f32, mouse_target: ThingIdx) -> (thing: Thing) {
+	thing = {
+		starting_pos, // position
+		{0, 0}, // velocity
+    100, // running_strength
+		0, // size
+		Walls{}, // on_wall
+    mouse_target, // target
+		level, // level
+		{.moves_with_wasd}, // flags
+		proc(thing: Thing, camera: Camera) {
+			//raylib.DrawText(fmt.caprint(thing.pos), 400, 50, 16, raylib.BLACK)
+			raylib.DrawCircleV(
+				world_to_screenspace(thing.pos, camera),
+				1. * camera.zoom,
+				raylib.BLACK,
+			)
+		}, // draw_thing
+		proc(
+			prev_game: ^GameState,
+			game: ^GameState,
+			next_game: ^GameState,
+			prev_input: InputState,
+			input: InputState,
+			idx: ThingIdx,
+		) {
+			thing, success := get_thing(&(game.things), idx)
+			if !success {return}
+			switch game.hot_group {
+			case .edit_tiles:
+			case .edit_things:
+			case .player_actions:
+			}
+		}, // on_click
+	}
+	return thing
+}
 easy_mouse :: proc(level: Level) -> (thing: Thing) {
 	thing = {
 		level_center(level), // position
 		{0, 0}, // velocity
-		0,
+    0, // running_speed
+		0, // size
 		//{}, // on corners
-		{}, // on_wall
+		Walls{}, // on_wall
+    ThingIdx{},
 		level, // level
-		{.move_with_mouse}, // flags
+		{.moves_with_mouse, .ignore_level}, // flags
 		proc(thing: Thing, camera: Camera) {
 			screenspace_coords: [2]f32 = world_to_screenspace(thing.pos, camera)
 			raylib.DrawText(fmt.caprint(screenspace_coords), 100, 50, 16, raylib.BLACK)
-			raylib.DrawText(
-				fmt.caprint(thing.on_wall),
-				i32(raylib.GetRenderWidth() / 3),
-				50,
-				16,
-				raylib.BLACK,
-			)
-      if .ignore_level in thing.flags {
 			raylib.DrawCircleV(screenspace_coords, 1. * camera.zoom, raylib.RED)
-      } else {
-			raylib.DrawCircleV(screenspace_coords, 1. * camera.zoom, raylib.GREEN)
-      }
 		}, // draw_thing
+		//.do_nothing // on_click
+		proc(
+			prev_game: ^GameState,
+			game: ^GameState,
+			next_game: ^GameState,
+			prev_input: InputState,
+			input: InputState,
+			idx: ThingIdx,
+		) {
+			thing, success := get_thing(&(game.things), idx)
+			if !success {return}
+			switch game.hot_group {
+			case .edit_tiles:
+				kind: TileKind = TileKind(linalg.min(i32(TileKind.outside) - 1, game.hot_key))
+				set_tile(game.level, linalg.to_i32(thing.pos), kind)
+			case .edit_things:
+				if game.hot_key < 2 {
+					if tile, _ := get_tile(game.level, linalg.to_i32(thing.pos)); !tile.solid {
+						switch game.hot_key {
+						case 0:
+            if .left_mouse not_in prev_input.pressed_buttons {
+              push_thing(&(next_game.things), easy_slicking(game.level, thing.pos, idx))
+            }
+						case 1:
+							rand: f32 = f32(input.random)
+							push_thing(
+								&(next_game.things),
+								easy_dot(
+									game.level,
+									thing.pos,
+									linalg.normalize([2]f32{linalg.sin(rand), linalg.cos(rand)}) *
+									30,
+								),
+							)
+						}
+					}
+				}
+			case .player_actions:
+			}
+		}, // on_click
 	}
 	return thing
 }
@@ -326,454 +579,271 @@ draw_things :: proc(thing_pool: ^ThingPool, camera: Camera) {
 		thing, successful := get_thing(thing_pool, idx)
 		assert(successful)
 		thing.draw_thing(thing, camera)
-    if i == thing_pool.offset - 1 {
-      raylib.DrawText(fmt.caprint(thing.velocity), i32(f32(raylib.GetRenderWidth()) * 0.75), 50, 16, raylib.BLACK)
-    }
+		if i == thing_pool.offset - 1 {
+			raylib.DrawText(
+				fmt.caprint(thing.velocity),
+				i32(f32(raylib.GetRenderWidth()) * 0.75),
+				50,
+				16,
+				raylib.BLACK,
+			)
+		}
 	}
 }
 
 // tasks
-Task :: proc(
+TaskProc :: proc(
 	prev_game: ^GameState,
-	game_state: ^GameState,
+	game: ^GameState,
 	next_game: ^GameState,
 	prev_input: InputState,
 	input: InputState,
 	idx: ThingIdx,
 )
-move_with_mouse: Task : proc(
-	prev_game: ^GameState,
-	game_state: ^GameState,
-	next_game: ^GameState,
-	prev_input: InputState,
-	input: InputState,
-	idx: ThingIdx,
-) {
-	things: ^ThingPool = &(game_state.things)
-	next_things: ^ThingPool = &(next_game.things)
-	thing: Thing
-	new_thing: Thing
-	success: bool
-	thing, success = get_thing(things, idx)
-	new_thing, success = get_thing(next_things, idx)
-	if success {
-		if .move_with_mouse in thing.flags {
-			mouse_strength :: 5.
-			new_thing.velocity = input.mouse_delta * mouse_strength
-			//fmt.println(new_thing.pos)
+Task :: enum {
+	do_nothing,
+	move_with_mouse,
+  move_with_wasd,
+	do_gravity,
+	move,
+	handle_click,
+}
+tasks :: [Task]TaskProc {
+	.do_nothing = proc(
+		prev_game: ^GameState,
+		game: ^GameState,
+		next_game: ^GameState,
+		prev_input: InputState,
+		input: InputState,
+		idx: ThingIdx,
+	) {
+	},
+	.move_with_mouse = proc(
+		prev_game: ^GameState,
+		game: ^GameState,
+		next_game: ^GameState,
+		prev_input: InputState,
+		input: InputState,
+		idx: ThingIdx,
+	) {
+		things: ^ThingPool = &(game.things)
+		next_things: ^ThingPool = &(next_game.things)
+		thing: Thing
+		new_thing: Thing
+		success: bool
+		thing, success = get_thing(things, idx)
+		new_thing, success = get_thing(next_things, idx)
+		if success {
+			if .moves_with_mouse in thing.flags {
+				mouse_strength :: 5.
+				new_thing.velocity = input.mouse_delta * mouse_strength
+				//fmt.println(new_thing.pos)
 
+				set_thing(next_things, idx, new_thing)
+			}
+		}
+	},
+  .move_with_wasd = proc(
+		prev_game: ^GameState,
+		game: ^GameState,
+		next_game: ^GameState,
+		prev_input: InputState,
+		input: InputState,
+		idx: ThingIdx,
+	) {
+		things: ^ThingPool = &(game.things)
+		next_things: ^ThingPool = &(next_game.things)
+		thing: Thing
+		new_thing: Thing
+		success: bool
+		thing, success = get_thing(things, idx)
+		new_thing, success = get_thing(next_things, idx)
+		if success {
+			if .moves_with_wasd in thing.flags {
+        wasd_dir: [2]f32 = {}
+        if .W in input.pressed_buttons {
+          wasd_dir += {0, -1}
+        }
+        if .A in input.pressed_buttons {
+          wasd_dir += {-1, 0}
+        }
+        if .S in input.pressed_buttons {
+          wasd_dir += {0, 1}
+        }
+        if .D in input.pressed_buttons {
+          wasd_dir += {1, 0}
+        }
+        // (NOTE) while i have stopped residual drift when you ease off the gas
+        //  there is still drift across axis that you are no longer using
+        //  so if im going up, but then i go left or right, i will drift upwards
+        // i think
+        delta_vel: [2]f32 = {}
+        if linalg.length(wasd_dir) != 0 {
+          wasd_dir = wasd_dir / linalg.length(wasd_dir)
+				  delta_vel = wasd_dir * thing.running_strength * input.delta_time
+        } else {
+          wasd_dir = linalg.normalize0(-thing.velocity)
+          delta_vel = wasd_dir * min(thing.running_strength * input.delta_time, linalg.length(-thing.velocity))
+        }
+        new_thing.velocity = thing.velocity + delta_vel
+				//fmt.println(new_thing.pos)
+
+				set_thing(next_things, idx, new_thing)
+			}
+		}
+  },
+
+	.do_gravity = proc(
+		prev_game: ^GameState,
+		game: ^GameState,
+		next_game: ^GameState,
+		prev_input: InputState,
+		input: InputState,
+		idx: ThingIdx,
+	) {
+		things: ^ThingPool = &(game.things)
+		next_things: ^ThingPool = &(next_game.things)
+		gravity_strength :: 100.
+		thing: Thing
+		new_thing: Thing
+		success: bool
+		thing, success = get_thing(things, idx)
+		new_thing, success = get_thing(next_things, idx)
+		if success {
+			if .does_gravity in thing.flags && .south not_in thing.on_wall {
+				new_thing.velocity.y = thing.velocity.y + gravity_strength * input.delta_time
+			}
 			set_thing(next_things, idx, new_thing)
 		}
-	}
-}
-do_gravity: Task : proc(
-	prev_game: ^GameState,
-	game_state: ^GameState,
-	next_game: ^GameState,
-	prev_input: InputState,
-	input: InputState,
-	idx: ThingIdx,
-) {
-	things: ^ThingPool = &(game_state.things)
-	next_things: ^ThingPool = &(next_game.things)
-	gravity_strength :: 100.
-	thing: Thing
-	new_thing: Thing
-	success: bool
-	thing, success = get_thing(things, idx)
-	new_thing, success = get_thing(next_things, idx)
-	if success {
-		if .does_gravity in thing.flags && .south not_in thing.on_wall {
-			new_thing.velocity.y = thing.velocity.y + gravity_strength * input.delta_time
-		}
-		set_thing(next_things, idx, new_thing)
-	}
-}
-
-Wall :: enum {
-	north,
-	east,
-	south,
-	west,
-}
-Walls :: bit_set[Wall]
-point_cast_tiled :: proc(
-	level: Level,
-	start: [2]f32,
-	velocity: [2]f32,
-) -> (
-	length: f32,
-	hit: Walls,
-) {
-	mag: f32 = linalg.length(velocity)
-	//re: = { x: cos(rdAngle) * mag + ro.x, y: sin(rdAngle) * mag + ro.y}
-	dir: [2]f32 = linalg.normalize(velocity)
-	step: [2]i32 = linalg.to_i32(linalg.sign(dir))
-
-	cell: [2]i32 = linalg.to_i32(start)
-
-	rayUnitStepSize: [2]f32 = {
-		linalg.sqrt(1 + (dir.y / dir.x) * (dir.y / dir.x)),
-		linalg.sqrt(1 + (dir.x / dir.y) * (dir.x / dir.y)),
-	}
-
-	rayLength: [2]f32 = {0, 0}
-	fract: [2]f32 = start - linalg.to_f32(cell)
-	if (dir.x < 0) {
-		rayLength.x = fract.x * rayUnitStepSize.x
-	} else {
-		rayLength.x = (1 - fract.x) * rayUnitStepSize.x
-	}
-
-	if (dir.y < 0) {
-		rayLength.y = fract.y * rayUnitStepSize.y
-	} else {
-		rayLength.y = (1 - fract.y) * rayUnitStepSize.y
-	}
-
-	possible_walls: [2]Wall = {.west if step.x < 0 else .east, .north if step.y < 0 else .south}
-	len: f32 = rayLength.y
-	possible_hit: Walls = {possible_walls.y}
-	if rayLength.x < rayLength.y {
-		len = rayLength.x
-		possible_hit = {possible_walls.x}
-	}
-	prev_len: f32 = 0
-	hit = {}
-	for ; len < mag + 1; len = min(rayLength.x, rayLength.y) {
-		if _, kind := get_tile(level, cell); kind != .air {
-			//rc = {ro.x + pl * rd.x, ro.y + pl * rd.y}
-			hit = possible_hit
-			break
-		}
-
-		if (rayLength.x < rayLength.y) {
-			cell.x += step.x
-			rayLength.x += rayUnitStepSize.x
-			prev_len = len
-			possible_hit = {possible_walls.x}
-
-		} else {
-			cell.y += step.y
-			rayLength.y += rayUnitStepSize.y
-			prev_len = len
-			possible_hit = {possible_walls.y}
-		}
-	}
-	prev_len = min(prev_len, mag)
-	length = prev_len
-	return length, hit
-}
-
-/*Corner :: enum u8 {
-	bottom_left,
-	bottom_right,
-	top_right,
-	top_left,
-}
-Corners :: bit_set[Corner]
-Wall :: enum {
-	none,
-	down,
-	up,
-	right,
-	left,
-	all,
-	problem_brtl,
-	problem_bltr,
-}
-walls: [Wall]Corners : {
-	.none = {},
-	.down = {.bottom_left, .bottom_right},
-	.up = {.top_left, .top_right},
-	.right = {.bottom_right, .top_right},
-	.left = {.bottom_left, .top_left},
-	.all = {.bottom_right, .bottom_left, .top_right, .top_left},
-	.problem_brtl = {.bottom_right, .top_left},
-	.problem_bltr = {.top_right, .bottom_left},
-}*/
-
-
-/*calc_point_corners :: proc(level: Level, pos: [2]f32) -> (corners: Corners) {
-	pos: [2]f32 = pos
-	fract: [2]f32 = linalg.fract(pos)
-	corners = walls[.none]
-	if fract == {0, 0} {
-		bottom_right: [2]i32 = linalg.to_i32(pos)
-		bottom_left: [2]i32 = bottom_right + {-1, 0}
-		top_right: [2]i32 = bottom_right + {0, -1}
-		top_left: [2]i32 = bottom_right + {-1, -1}
-
-		_, kind := get_tile(level, bottom_right)
-		if kind != .air {corners += {.bottom_right}}
-		_, kind = get_tile(level, bottom_left)
-		if kind != .air {corners += {.bottom_left}}
-		_, kind = get_tile(level, top_left)
-		if kind != .air {corners += {.top_left}}
-		_, kind = get_tile(level, top_right)
-		if kind != .air {corners += {.top_right}}
-		return corners
-	}
-	if fract.x == 0 {
-		right: [2]i32 = linalg.to_i32(pos)
-		left: [2]i32 = right + {-1, 0}
-		_, kind := get_tile(level, right)
-		if kind != .air {corners += walls[.right]}
-		_, kind = get_tile(level, left)
-		if kind != .air {corners += walls[.left]}
-		return corners
-	}
-	if fract.y == 0 {
-		down: [2]i32 = linalg.to_i32(pos)
-		up: [2]i32 = down + {0, -1}
-		_, kind := get_tile(level, down)
-		if kind != .air {corners += walls[.down]}
-		_, kind = get_tile(level, up)
-		if kind != .air {corners += walls[.up]}
-		return corners
-	}
-	return corners
-}*/
-// we'll just do this for now
-bump_point_away_from_walls :: proc(
-	level: Level,
-	pos: [2]f32,
-	bump_radius: f32,
-) -> (
-	out_pos: [2]f32,
-) {
-	out_pos = pos
-	cell: CellPos = linalg.to_i32(pos)
-	fract: [2]f32 = linalg.fract(pos)
-	wall_dirs :: enum {
-		north,
-		east,
-		south,
-		west,
-	}
-	wall_cells: [wall_dirs][2]i32 = {
-		.north = {0, -1},
-		.east  = {1, 0},
-		.south = {0, 1},
-		.west  = {-1, 0},
-	}
-	wall_points: [wall_dirs][2]f32 = {
-		.north = {fract.x, 0.},
-		.east  = {1, fract.y},
-		.south = {fract.x, 1},
-		.west  = {0, fract.y},
-	}
-
-	corner_dirs :: enum {
-		north_west,
-		north_east,
-		south_east,
-		south_west,
-	}
-	corner_cells: [corner_dirs][2]i32 = {
-		.north_west = {-1, -1},
-		.north_east = {1, -1},
-		.south_east = {1, 1},
-		.south_west = {-1, 1},
-	}
-	corner_points: [corner_dirs][2]f32 = {
-		.north_west = {0, 0},
-		.north_east = {1, 0},
-		.south_east = {1, 1},
-		.south_west = {0, 1},
-	}
-
-
-	wall_bump: [2]f32 = {0, 0}
-	for wall in wall_dirs {
-		if _, kind := get_tile_pos(level, cell + wall_cells[wall]); kind != .air {
-			wall_point_to_fract: [2]f32 = fract - wall_points[wall]
-			len: f32 = max(bump_radius - linalg.length(wall_point_to_fract), 0)
-			dir: [2]f32 = linalg.normalize(wall_point_to_fract)
-			wall_bump += len * dir
-		}
-	}
-	out_pos += wall_bump
-
-
-	cell = linalg.to_i32(out_pos)
-	fract = linalg.fract(out_pos)
-
-	corner_bump: [2]f32 = {0, 0}
-	for corner in corner_dirs {
-		if _, kind := get_tile_pos(level, cell + corner_cells[corner]); kind != .air {
-			corner_point_to_fract: [2]f32 = fract - corner_points[corner]
-			len: f32 = max(bump_radius - linalg.length(corner_point_to_fract), 0)
-			dir: [2]f32 = linalg.normalize(corner_point_to_fract)
-			corner_bump += len * dir
-		}
-	}
-
-	out_pos += corner_bump
-	return out_pos
-}
-move: Task : proc(
-	prev_game: ^GameState,
-	game_state: ^GameState,
-	next_game: ^GameState,
-	prev_input: InputState,
-	input: InputState,
-	idx: ThingIdx,
-) {
-	things: ^ThingPool = &(game_state.things)
-	next_things: ^ThingPool = &(next_game.things)
-	thing: Thing
-	new_thing: Thing
-	success: bool
-	thing, success = get_thing(things, idx)
-	new_thing, success = get_thing(next_things, idx)
-	if success && thing.velocity != {0, 0} {
-		velocity := thing.velocity
-    movement: [2]f32 = velocity * input.delta_time
-		pos: [2]f32 = thing.pos
-		walls: Walls = thing.on_wall
-		if .ignore_level not_in thing.flags {
-			// MOVE //
-			// https://youtu.be/NbSee-XM7WA?si=AUetUTj1sKyZmTBY
-      cell: CellPos = linalg.to_i32(pos)
-			if .north in thing.on_wall {
-        _, kind := get_tile(thing.level, cell + {0, -1})
-				if velocity.y > 0 || kind == .air {
-					walls -= {.north}
-				} else {
-					velocity.y = max(velocity.y, 0)
+	},
+	.move = proc(
+		prev_game: ^GameState,
+		game: ^GameState,
+		next_game: ^GameState,
+		prev_input: InputState,
+		input: InputState,
+		idx: ThingIdx,
+	) {
+		things: ^ThingPool = &(game.things)
+		next_things: ^ThingPool = &(next_game.things)
+		thing: Thing
+		new_thing: Thing
+		success: bool
+		thing, success = get_thing(things, idx)
+		new_thing, success = get_thing(next_things, idx)
+		if success && thing.velocity != {0, 0} {
+			velocity := thing.velocity
+			movement: [2]f32 = velocity * input.delta_time
+			pos: [2]f32 = thing.pos
+			walls: Walls = thing.on_wall
+			if .ignore_level not_in thing.flags {
+				// MOVE //
+				// https://youtu.be/NbSee-XM7WA?si=AUetUTj1sKyZmTBY
+				cell: CellPos = linalg.to_i32(pos)
+				if .north in thing.on_wall {
+					tile, kind := get_tile(thing.level, cell + {0, -1})
+					if velocity.y > 0 || !tile.solid {
+						walls -= {.north}
+					} else {
+						velocity.y = max(velocity.y, 0)
+					}
 				}
+				if .east in thing.on_wall {
+					tile, kind := get_tile(thing.level, cell + {1, 0})
+					if velocity.x < 0 || !tile.solid {
+						walls -= {.east}
+					} else {
+						velocity.x = min(velocity.x, 0)
+					}
+				}
+				if .south in thing.on_wall {
+					tile, kind := get_tile(thing.level, cell + {0, 1})
+					if velocity.y < 0 || !tile.solid {
+						walls -= {.south}
+					} else {
+						velocity.y = min(velocity.y, 0)
+					}
+				}
+				if .west in thing.on_wall {
+					tile, kind := get_tile(thing.level, cell + {-1, 0})
+					if velocity.x > 0 || !tile.solid {
+						walls -= {.west}
+					} else {
+						velocity.x = max(velocity.x, 0)
+					}
+				}
+				movement = velocity * input.delta_time
+				if movement != {} {
+					len, hit := point_cast_tiled(thing.level, pos, movement)
+					pos = pos + len * linalg.normalize(movement)
+					if .north in hit {
+						pos.y += 0.05
+					}
+					if .east in hit {
+						pos.x -= 0.05
+					}
+					if .south in hit {
+						pos.y -= 0.05
+					}
+					if .west in hit {
+						pos.x += 0.05
+					}
+					walls += hit}
+				movement = pos - thing.pos
 			}
-			if .east in thing.on_wall {
-        _, kind := get_tile(thing.level, cell + {1, 0})
-				if velocity.x < 0 || kind == .air {
-					walls -= {.east}
-				} else {
-					velocity.x = min(velocity.x, 0)
-				}
-			}
-			if .south in thing.on_wall {
-        _, kind := get_tile(thing.level, cell + {0, 1})
-				if velocity.y < 0 || kind == .air {
-					walls -= {.south}
-				} else {
-					velocity.y = min(velocity.y, 0)
-				}
-			}
-			if .west in thing.on_wall {
-        _, kind := get_tile(thing.level, cell + {-1, 0})
-				if velocity.x > 0 || kind == .air {
-					walls -= {.west}
-				} else {
-					velocity.x = max(velocity.x, 0)
-				}
-			}
-      movement = velocity * input.delta_time
-			if movement != {} {
-				len, hit := point_cast_tiled(thing.level, pos, movement)
-				pos = pos + len * linalg.normalize(movement)
-				if .north in hit {
-					pos.y += 0.05
-				}
-				if .east in hit {
-					pos.x -= 0.05
-				}
-				if .south in hit {
-					pos.y -= 0.05
-				}
-				if .west in hit {
-					pos.x += 0.05
-				}
-				walls += hit}
-			movement = pos - thing.pos
+			new_thing.on_wall = walls
+			new_thing.pos = thing.pos + movement
+			new_thing.velocity = velocity
+			set_thing(next_things, idx, new_thing)
+			//fmt.println(next_things.thing[idx.idx].on_wall)
 		}
-		new_thing.on_wall = walls
-		new_thing.pos = thing.pos + movement
-    new_thing.velocity = velocity
-		set_thing(next_things, idx, new_thing)
-		//fmt.println(next_things.thing[idx.idx].on_wall)
-	}
+	},
+	.handle_click = proc(
+		prev_game: ^GameState,
+		game: ^GameState,
+		next_game: ^GameState,
+		prev_input: InputState,
+		input: InputState,
+		idx: ThingIdx,
+	) {
+		thing: Thing
+		success: bool
+		thing, success = get_thing(&(game.things), idx)
+		if thing.on_click != {} && .left_mouse in input.pressed_buttons {
+			thing.on_click(prev_game, game, next_game, prev_input, input, idx)
+		}
+	},
 }
-spawn_dot_on_click: Task : proc(
-	prev_game: ^GameState,
-	game_state: ^GameState,
-	next_game: ^GameState,
-	prev_input: InputState,
-	input: InputState,
-	idx: ThingIdx,
-) {
-	things: ^ThingPool = &(game_state.things)
-	next_things: ^ThingPool = &(next_game.things)
-	thing: Thing
-	new_thing: Thing
-	success: bool
-	thing, success = get_thing(things, idx)
-	new_thing, success = get_thing(next_things, idx)
-
-	if .move_with_mouse in thing.flags {
-		if .left_mouse in input.pressed_buttons {
-			if .ignore_level in thing.flags {
-				cell: CellPos = linalg.to_i32(thing.pos)
-				if idx, in_bounds := idx_from_pos(next_game.level, cell); in_bounds {
-					next_game.level.data[idx] = .ground
-				}
-			} else {
-				rand: f32 = f32(input.random)
-				push_thing(
-					next_things,
-					easy_dot(
-						game_state.level,
-						thing.pos,
-						linalg.normalize([2]f32{linalg.sin(rand), linalg.cos(rand)}) * 30,
-					),
-				)
-			}
-		}
-		if .right_mouse in prev_input.pressed_buttons &&
-		   .right_mouse not_in input.pressed_buttons {
-			cell: CellPos = linalg.to_i32(thing.pos)
-			if .ignore_level in thing.flags {
-				if _, kind := get_tile(game_state.level, cell); kind == .air {
-					new_thing.flags -= {.ignore_level}
-				}
-			} else {
-				new_thing.flags += {.ignore_level}
-			}
-		}
-	}
-	set_thing(next_things, idx, new_thing)
-}
-
 
 resolve_task :: proc(
 	prev_game: ^GameState,
-	game_state: ^GameState,
+	game: ^GameState,
 	next_game: ^GameState,
 	prev_input: InputState,
 	input: InputState,
 	task: Task,
 ) {
 	prev_things: ^ThingPool = &(prev_game.things)
-	things: ^ThingPool = &(game_state.things)
+	things: ^ThingPool = &(game.things)
 	next_things: ^ThingPool = &(next_game.things)
 	for i in 0 ..< things.offset {
 		idx: ThingIdx = {
 			idx        = i,
 			generation = things.generations[i],
 		}
-
-		task(prev_game, game_state, next_game, prev_input, input, idx)
+		tasks := tasks
+		tasks[task](prev_game, game, next_game, prev_input, input, idx)
 	}
 }
 resolve_things :: proc(
 	prev_game: ^GameState,
-	game_state: ^GameState,
+	game: ^GameState,
 	next_game: ^GameState,
 	prev_input: InputState,
 	input: InputState,
 ) {
 	prev_things: ^ThingPool = &(prev_game.things)
-	things: ^ThingPool = &(game_state.things)
+	things: ^ThingPool = &(game.things)
 	next_things: ^ThingPool = &(next_game.things)
 	next_things.offset = things.offset
 	for i in 0 ..< things.offset {
@@ -790,16 +860,34 @@ resolve_things :: proc(
 		set_thing(next_things, idx, thing)
 	}
 
-	resolve_task(prev_game, game_state, next_game, prev_input, input, move_with_mouse)
-	resolve_task(prev_game, game_state, next_game, prev_input, input, do_gravity)
-	resolve_task(prev_game, game_state, next_game, prev_input, input, move)
-	resolve_task(prev_game, game_state, next_game, prev_input, input, spawn_dot_on_click)
+	resolve_task(prev_game, game, next_game, prev_input, input, .move_with_mouse)
+	resolve_task(prev_game, game, next_game, prev_input, input, .move_with_wasd)
+	resolve_task(prev_game, game, next_game, prev_input, input, .do_gravity)
+	resolve_task(prev_game, game, next_game, prev_input, input, .move)
+	// i will want to make sure all stuff that can change level goes down here
+	// spawn_dot_on_click needs a new name since it can change levels as well now
+	resolve_task(prev_game, game, next_game, prev_input, input, .handle_click)
 }
+// movement helpers //
 
 // Input State
 GameButton :: enum {
 	left_mouse,
 	right_mouse,
+	one,
+	two,
+	three,
+	four,
+	five,
+	six,
+	seven,
+	eight,
+	nine,
+	W,
+	A,
+	S,
+	D,
+	tab,
 }
 GameButtons :: bit_set[GameButton]
 InputState :: struct {
@@ -820,6 +908,38 @@ get_input_state :: proc() -> InputState {
 	if raylib.IsMouseButtonDown(raylib.MouseButton.RIGHT) {
 		pressed_buttons += {.right_mouse}
 	}
+	if raylib.IsKeyDown(raylib.KeyboardKey.ONE) {
+		pressed_buttons += {.one}
+	}
+	if raylib.IsKeyDown(raylib.KeyboardKey.TWO) {
+		pressed_buttons += {.two}
+	}
+	if raylib.IsKeyDown(raylib.KeyboardKey.THREE) {
+		pressed_buttons += {.three}
+	}
+	if raylib.IsKeyDown(raylib.KeyboardKey.FOUR) {
+		pressed_buttons += {.four}
+	}
+	if raylib.IsKeyDown(raylib.KeyboardKey.FIVE) {
+		pressed_buttons += {.five}
+	}
+	if raylib.IsKeyDown(raylib.KeyboardKey.SIX) {
+		pressed_buttons += {.six}
+	}
+	if raylib.IsKeyDown(raylib.KeyboardKey.SEVEN) {
+		pressed_buttons += {.seven}
+	}
+	if raylib.IsKeyDown(raylib.KeyboardKey.EIGHT) {
+		pressed_buttons += {.eight}
+	}
+	if raylib.IsKeyDown(raylib.KeyboardKey.NINE) {
+		pressed_buttons += {.nine}
+	}
+	if raylib.IsKeyDown(raylib.KeyboardKey.W) {pressed_buttons += {.W}}
+	if raylib.IsKeyDown(raylib.KeyboardKey.A) {pressed_buttons += {.A}}
+	if raylib.IsKeyDown(raylib.KeyboardKey.S) {pressed_buttons += {.S}}
+	if raylib.IsKeyDown(raylib.KeyboardKey.D) {pressed_buttons += {.D}}
+	if raylib.IsKeyDown(raylib.KeyboardKey.TAB) {pressed_buttons += {.tab}}
 	return {
 		1. / 60.,
 		//raylib.GetFrameTime(),
@@ -830,25 +950,52 @@ get_input_state :: proc() -> InputState {
 }
 // Game State
 GameState :: struct {
-	level:  Level,
-	things: ThingPool,
-	camera: Camera,
+	level:     Level,
+	things:    ThingPool,
+	camera:    Camera,
+	hot_key:   i32,
+	hot_group: HotGroup,
+}
+HotGroup :: enum {
+	edit_tiles,
+	edit_things,
+	player_actions,
 }
 // Tick
 tick :: proc(
 	prev_game: ^GameState,
-	game_state: ^GameState,
+	game: ^GameState,
 	next_game: ^GameState,
 	prev_input: InputState,
 	input: InputState,
 ) {
-	resolve_things(prev_game, game_state, next_game, prev_input, input)
+	next_game.hot_group = game.hot_group
+	if .tab not_in input.pressed_buttons && .tab in prev_input.pressed_buttons {
+		next_game.hot_group = HotGroup((i32(next_game.hot_group) + 1) % 3) // (TODO) make this better (i don't want to increase 3 every tine i ad a hotgroup
+	}
+	next_game.hot_key = game.hot_key
+	if .one in input.pressed_buttons {
+		next_game.hot_key = 0
+	}
+	if .two in input.pressed_buttons {
+		next_game.hot_key = 1
+	}
+	if .three in input.pressed_buttons {
+		next_game.hot_key = 2
+	}
+	if .four in input.pressed_buttons {
+		next_game.hot_key = 3
+	}
+	if .five in input.pressed_buttons {
+		next_game.hot_key = 4
+	}
+	resolve_things(prev_game, game, next_game, prev_input, input)
 }
 // drawing
-draw_game :: proc(game_state: GameState) {
-	things := game_state.things
-	draw_level(game_state.level, game_state.camera)
-	draw_things(&things, game_state.camera)
+draw_game :: proc(game: GameState) {
+	things := game.things
+	draw_level(game.level, game.camera)
+	draw_things(&things, game.camera)
 }
 
 // Setup //
@@ -868,7 +1015,7 @@ setup_game :: proc(
 	prev_input: InputState,
 	input_state: InputState,
 	prev_game: GameState,
-	game_state: GameState,
+	game: GameState,
 	next_game: GameState,
 ) {
 	// setup input
@@ -884,7 +1031,7 @@ setup_game :: proc(
 	//	level.data[idx] = TileKind((pos.x + pos.y) % 2)
 	//}
 	prev_game.level = level
-	game_state.level = level
+	game.level = level
 	next_game.level = level
 
 	// setup camera
@@ -896,7 +1043,7 @@ setup_game :: proc(
 		) * .9,
 	}
 	prev_game.camera = camera
-	game_state.camera = camera
+	game.camera = camera
 	next_game.camera = camera
 
 	// setup things
@@ -912,9 +1059,9 @@ setup_game :: proc(
 	push_thing(&prev_things, easy_mouse(level))
 	push_thing(&things, easy_mouse(level))
 	prev_game.things = prev_things
-	game_state.things = things
+	game.things = things
 	next_game.things = next_things
-	return prev_input, input_state, prev_game, game_state, next_game
+	return prev_input, input_state, prev_game, game, next_game
 }
 
 main :: proc() {
@@ -934,15 +1081,16 @@ main :: proc() {
 
 
 	setup_rendering()
-	prev_input, input_state, prev_game, game_state, next_game := setup_game(&lifelong)
+	prev_input, input_state, prev_game, game, next_game := setup_game(&lifelong)
 
-	for !raylib.IsKeyDown(raylib.KeyboardKey.SPACE) {
+	/*
+  for !raylib.IsKeyDown(raylib.KeyboardKey.SPACE) {
 		raylib.BeginDrawing()
 		raylib.ClearBackground(raylib.LIGHTGRAY)
 		raylib.DrawFPS(raylib.GetRenderWidth() - 100, 50)
-		draw_game(game_state)
+		draw_game(game)
 		raylib.EndDrawing()
-	}
+	}*/
 
 	// game stuff
 	for !raylib.WindowShouldClose() {
@@ -952,23 +1100,81 @@ main :: proc() {
 		raylib.ClearBackground(raylib.LIGHTGRAY)
 		raylib.DrawFPS(raylib.GetRenderWidth() - 100, 50)
 		raylib.DrawText(
-			fmt.caprint(game_state.things.offset),
+			fmt.caprint(game.things.offset),
 			i32(raylib.GetRenderWidth() / 2),
 			50,
 			16,
 			raylib.BLACK,
 		)
-		draw_game(game_state)
+		draw_game(game)
+		selection_count :: 5
+		size: [2]i32 = {50 * selection_count, 50}
+		center: [2]i32 = {raylib.GetRenderWidth() / 2, raylib.GetRenderHeight() - 50}
+		raylib.DrawRectangle(
+			center.x - size.x / 2,
+			center.y - size.y / 2,
+			size.x,
+			size.y,
+			raylib.DARKBLUE,
+		)
+		square_size: [2]i32 = {40, 40}
+		square_center: [2]i32 = {center.x - size.x / 2, center.y}
+		raylib.DrawRectangle(
+			square_center.x + 5,
+			square_center.y - square_size.y / 2,
+			40,
+			40,
+			easy_tiles[.snow].color,
+		)
+		square_center.x += 50
+		raylib.DrawRectangle(
+			square_center.x + 5,
+			square_center.y - square_size.y / 2,
+			40,
+			40,
+			easy_tiles[.dirt].color,
+		)
+		square_center.x += 50
+		raylib.DrawRectangle(
+			square_center.x + 5,
+			square_center.y - square_size.y / 2,
+			40,
+			40,
+			easy_tiles[.ice].color,
+		)
+		square_center.x += 50
+		raylib.DrawRectangle(
+			square_center.x + 5,
+			square_center.y - square_size.y / 2,
+			40,
+			40,
+			easy_tiles[.water].color,
+		)
+		square_center.x += 50
+		raylib.DrawRectangle(
+			square_center.x + 5,
+			square_center.y - square_size.y / 2,
+			40,
+			40,
+			easy_tiles[.wall].color,
+		)
+		raylib.DrawText(
+			fmt.caprint(game.hot_key),
+			i32(raylib.GetRenderWidth() / 3),
+			50,
+			16,
+			raylib.BLACK,
+		)
 		raylib.EndDrawing()
 
 		input_state = get_input_state()
-		tick(&prev_game, &game_state, &next_game, prev_input, input_state)
+		tick(&prev_game, &game, &next_game, prev_input, input_state)
 		// (TODO) makes these pointers so juggling is faster
 		prev_input = input_state
 
 		//prev_prev_game: GameState = prev_game
-		prev_game = game_state
-		game_state = next_game
+		prev_game = game
+		game = next_game
 		//next_game = prev_prev_game
 	}
 	raylib.CloseWindow()
