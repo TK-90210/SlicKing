@@ -347,6 +347,7 @@ ThingFlags :: bit_set[enum {
 	moves_with_mouse,
 	moves_with_wasd,
 	can_go_outside_level,
+  freezing,
 	ignore_level,
 	ignore_friction,
 }]
@@ -386,8 +387,8 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 		Walls{}, // on_wall
 		ThingIdx{}, // target
 		level, // level
-		{.does_gravity}, // flags
-		{.does_gravity}, // temp_flags
+		{.does_gravity, .freezing}, // flags
+		{.does_gravity, .freezing}, // temp_flags
 		proc(thing: Thing, camera: Camera) {
 			//raylib.DrawText(fmt.caprint(thing.pos), 400, 50, 16, raylib.BLACK)
 			raylib.DrawCircleV(
@@ -672,6 +673,7 @@ Task :: enum {
 	move_with_wasd,
 	do_gravity,
 	move,
+  freeze,
 	handle_click,
 }
 tasks :: [Task]TaskProc {
@@ -916,6 +918,23 @@ tasks :: [Task]TaskProc {
 			set_thing(next_things, idx, new_thing)
 		}
 	},
+  .freeze = proc(
+		prev_game: ^GameState,
+		game: ^GameState,
+		next_game: ^GameState,
+		prev_input: InputState,
+		input: InputState,
+		idx: ThingIdx,
+	) {
+		thing: Thing
+		success: bool
+		thing, success = get_thing(&(game.things), idx)
+    if .freezing in thing.temp_flags {
+      if tile, kind := get_tile(game.level, linalg.to_i32(thing.pos)); kind == .water {
+        set_tile(game.level, linalg.to_i32(thing.pos), .ice)
+      }
+    }
+  },
 	.handle_click = proc(
 		prev_game: ^GameState,
 		game: ^GameState,
@@ -981,6 +1000,7 @@ resolve_things :: proc(
 	resolve_task(prev_game, game, next_game, prev_input, input, .move)
 	// i will want to make sure all stuff that can change level goes down here
 	// spawn_dot_on_click needs a new name since it can change levels as well now
+	resolve_task(prev_game, game, next_game, prev_input, input, .freeze)
 	resolve_task(prev_game, game, next_game, prev_input, input, .handle_click)
 }
 // movement helpers //
