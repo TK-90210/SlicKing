@@ -7,15 +7,15 @@
       <BreakpointProxy
          BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
          <BreakpointContent
-            uuid = "1A2F9978-0EAA-4326-844D-23559C2B1151"
+            uuid = "E1D00584-8E90-46AB-821D-5F24E3E709AB"
             shouldBeEnabled = "No"
             ignoreCount = "0"
             continueAfterRunningActions = "No"
             filePath = "Quicky.odin"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "323"
-            endingLineNumber = "323"
+            startingLineNumber = "943"
+            endingLineNumber = "943"
             landmarkName = "unknown"
             landmarkType = "0">
          </BreakpointContent>
@@ -23,15 +23,15 @@
       <BreakpointProxy
          BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
          <BreakpointContent
-            uuid = "55C3978B-AA73-475D-B469-0B80231260F6"
+            uuid = "ACED0442-E94D-415D-A808-5F1C3C615467"
             shouldBeEnabled = "No"
             ignoreCount = "0"
             continueAfterRunningActions = "No"
             filePath = "Quicky.odin"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "1322"
-            endingLineNumber = "1322"
+            startingLineNumber = "786"
+            endingLineNumber = "786"
             landmarkName = "unknown"
             landmarkType = "0">
          </BreakpointContent>
@@ -39,15 +39,15 @@
       <BreakpointProxy
          BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
          <BreakpointContent
-            uuid = "2B06A344-72F7-48AB-A681-AB2FEAF4C5CD"
+            uuid = "2FC8F379-A318-48F7-A16A-740DFFA10E14"
             shouldBeEnabled = "No"
             ignoreCount = "0"
             continueAfterRunningActions = "No"
             filePath = "Quicky.odin"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "1321"
-            endingLineNumber = "1321"
+            startingLineNumber = "1233"
+            endingLineNumber = "1233"
             landmarkName = "unknown"
             landmarkType = "0">
          </BreakpointContent>
@@ -55,15 +55,15 @@
       <BreakpointProxy
          BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
          <BreakpointContent
-            uuid = "2346B2BA-89F8-4A3B-A62F-3F2AB00EB32D"
+            uuid = "61E25E31-8336-4A01-9F07-CC8F62EE6047"
             shouldBeEnabled = "No"
             ignoreCount = "0"
             continueAfterRunningActions = "No"
             filePath = "Quicky.odin"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "1323"
-            endingLineNumber = "1323"
+            startingLineNumber = "1231"
+            endingLineNumber = "1231"
             landmarkName = "unknown"
             landmarkType = "0">
          </BreakpointContent>
@@ -71,17 +71,63 @@
       <BreakpointProxy
          BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
          <BreakpointContent
-            uuid = "F8D103F8-0F5D-4B8E-8541-483605E2B73A"
-            shouldBeEnabled = "Yes"
+            uuid = "A6D78FAC-FD94-4A48-80EB-B3286505A018"
+            shouldBeEnabled = "No"
             ignoreCount = "0"
             continueAfterRunningActions = "No"
             filePath = "Quicky.odin"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "589"
-            endingLineNumber = "589"
+            startingLineNumber = "867"
+            endingLineNumber = "867"
             landmarkName = "unknown"
             landmarkType = "0">
+         </BreakpointContent>
+      </BreakpointProxy>
+      <BreakpointProxy
+         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
+         <BreakpointContent
+            uuid = "8CD71D45-34A1-4AF4-A98A-06FA52765CCC"
+            shouldBeEnabled = "No"
+            ignoreCount = "0"
+            continueAfterRunningActions = "No"
+            filePath = "Quicky.odin"
+            startingColumnNumber = "9223372036854775807"
+            endingColumnNumber = "9223372036854775807"
+            startingLineNumber = "866"
+            endingLineNumber = "866"
+            landmarkName = "unknown"
+            landmarkType = "0">
+            <Locations>
+               <Location
+                  uuid = "8CD71D45-34A1-4AF4-A98A-06FA52765CCC - b99a56bdf980238a"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "_proclit$anon-13"
+                  moduleName = "Quicky"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/buzzy/Documents/Programing-Projects/Handmade-Games/Quicky/Quicky.odin"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "866"
+                  endingLineNumber = "866">
+               </Location>
+               <Location
+                  uuid = "8CD71D45-34A1-4AF4-A98A-06FA52765CCC - b99a56bdf980238a"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "_proclit$anon-13"
+                  moduleName = "Quicky"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/buzzy/Documents/Programing-Projects/Handmade-Games/Quicky/Quicky.odin"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "866"
+                  endingLineNumber = "866">
+               </Location>
+            </Locations>
          </BreakpointContent>
       </BreakpointProxy>
    </Breakpoints>

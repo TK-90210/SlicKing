@@ -34,7 +34,7 @@ ThingNode :: struct {
 // i can play around with different mass densities if i want
 // aparently water is 1 gram per cubic centimeter and air is 1/800 of water
 drag_force :: proc(
-	fluid_mass_density: f32 = 1. / 1600.,
+	fluid_mass_density: f32 = 1. / 20.,
 	flow_velocity: [2]f32,
 	drag_coefficient: f32,
 	reference_area: f32 = 1.0,
@@ -389,6 +389,7 @@ ThingFlags :: bit_set[enum {
 	camera,
 	moves_towards_target,
 	moves_with_mouse,
+  moves_with_camera,
 	moves_with_wasd,
 	can_go_outside_level,
 	freezing,
@@ -396,25 +397,25 @@ ThingFlags :: bit_set[enum {
 	ignore_friction,
 }]
 Thing :: struct {
-	pos:              [2]f32, // 8 bytes
-	velocity:         [2]f32, // 8 bytes
-	running_strength: f32,
-	drag_coefficient: f32,
-	size:             f32,
-	zoom:             f32,
-	on_wall:          Walls,
-	target:           ThingIdx,
-  frame_acceleration: [2]f32,
+	pos:                [2]f32, // 8 bytes
+	velocity:           [2]f32, // 8 bytes
+	running_strength:   f32,
+	drag_coefficient:   f32,
+	size:               f32,
+	zoom:               f32,
+	on_wall:            Walls,
+	target:             ThingIdx,
+	frame_acceleration: [2]f32,
 	//on_corners: Corners,
-	level:            Level, // 
-	flags:            ThingFlags,
-	temp_flags:       ThingFlags,
+	level:              Level, // 
+	flags:              ThingFlags,
+	temp_flags:         ThingFlags,
 	// (TODO) (SERIALIZATION) probably a good idea to make a procedure array
 	// this way i can store an index instead of a pointer, which is more memory efficient
 	// also if this ever goes multiplayer a hacker can't just plop a pointer to their function in a level
 	// and hack someone's computer with an edited level
-	draw_thing:       proc(things: ^ThingPool, thing: Thing, camera: ThingIdx),
-	on_click:         TaskProc, // is not a task, it just needs the same signature
+	draw_thing:         proc(things: ^ThingPool, thing: Thing, camera: ThingIdx),
+	on_click:           TaskProc, // is not a task, it just needs the same signature
 }
 nil_thing :: proc() -> Thing {
 	thing: Thing = {}
@@ -487,18 +488,15 @@ easy_slicking :: proc(
 		}, // draw_thing
 		on_click = proc(
 			frame_arena: ^virtual.Arena,
-			prev_game: ^GameState,
-			game: ^GameState,
-			next_game: ^GameState,
 			prev_input: InputState,
 			input: InputState,
+			prev_game: ^GameState,
+			game: ^GameState,
 			idx: ThingIdx,
 		) {
-			thing, new_thing: Thing = {}, {}
+			thing: Thing = {}
 			success: bool = false
 			thing, success = get_thing(&(game.things), idx)
-			if !success {return}
-			new_thing, success = get_thing(&(next_game.things), idx)
 			if !success {return}
 			switch game.hot_group {
 			case .edit_tiles:
@@ -508,12 +506,12 @@ easy_slicking :: proc(
 				case 0:
 					// jetpack
 					if _, kind := get_tile(game.level, linalg.to_i32(thing.pos)); kind == .ice {
-						new_thing.temp_flags -= {.moves_with_wasd}
-						new_thing.temp_flags += {.using_jetpack, .moves_towards_target}
+						thing.temp_flags -= {.moves_with_wasd}
+						thing.temp_flags += {.using_jetpack, .moves_towards_target}
 					}
 				}
 			}
-			set_thing(&(next_game.things), idx, new_thing)
+			set_thing(&(game.things), idx, thing)
 		}, // on_click
 	}
 	return slicking_thing
@@ -526,11 +524,10 @@ easy_stationary_camera :: proc(level: Level, pos: [2]f32, zoom: f32) -> (camera_
 		draw_thing = proc(things: ^ThingPool, thing: Thing, camera: ThingIdx) {},
 		on_click = proc(
 			frame_arena: ^virtual.Arena,
-			prev_game: ^GameState,
-			game: ^GameState,
-			next_game: ^GameState,
 			prev_input: InputState,
 			input: InputState,
+			prev_game: ^GameState,
+			game: ^GameState,
 			idx: ThingIdx,
 		) {},
 	}
@@ -547,8 +544,8 @@ easy_mouse :: proc(level: Level) -> (mouse_thing: Thing) {
 		on_wall = Walls{}, // on_wall
 		target = ThingIdx{},
 		level = level, // level
-		flags = {.moves_with_mouse, .ignore_level}, // flags
-		temp_flags = {.moves_with_mouse, .ignore_level}, // temp_flags
+		flags = {.moves_with_camera, .moves_with_mouse, .ignore_level}, // flags
+		temp_flags = {.moves_with_camera, .moves_with_mouse, .ignore_level}, // temp_flags
 		draw_thing = proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {
 			camera, successful := get_thing(things, camera_idx)
 			if successful {
@@ -559,11 +556,10 @@ easy_mouse :: proc(level: Level) -> (mouse_thing: Thing) {
 		}, // draw_thing
 		on_click = proc(
 			frame_arena: ^virtual.Arena,
-			prev_game: ^GameState,
-			game: ^GameState,
-			next_game: ^GameState,
 			prev_input: InputState,
 			input: InputState,
+			prev_game: ^GameState,
+			game: ^GameState,
 			idx: ThingIdx,
 		) {
 			thing, success := get_thing(&(game.things), idx)
@@ -585,10 +581,7 @@ easy_mouse :: proc(level: Level) -> (mouse_thing: Thing) {
 								if err == .None {
 									slicking: Thing = easy_slicking(game.level, thing.pos, idx)
 									slicking.zoom = 45.
-									slicking_idx, success := push_thing(
-										&(next_game.things),
-										slicking,
-									)
+									slicking_idx, success := push_thing(&(game.things), slicking)
 									if success {
 										cam_node.thing = slicking_idx
 										list.push_front(&(game.cameras), &(cam_node.link))
@@ -598,7 +591,7 @@ easy_mouse :: proc(level: Level) -> (mouse_thing: Thing) {
 						case 1:
 							rand: f32 = f32(input.random)
 							push_thing(
-								&(next_game.things),
+								&(game.things),
 								easy_dot(
 									game.level,
 									thing.pos,
@@ -762,8 +755,9 @@ Task :: enum {
 	move_towards_target,
 	move_with_mouse,
 	move_with_wasd,
-	do_gravity,
+  do_gravity,
 	move,
+  move_with_camera,
 	freeze,
 	handle_click,
 }
@@ -790,8 +784,9 @@ tasks :: [Task]TaskProc {
 		success: bool
 		thing, success = get_thing(things, idx)
 		if !success {return}
-    thing.temp_flags = thing.flags
-    thing.frame_acceleration = {}
+		thing.temp_flags = thing.flags
+		thing.frame_acceleration = {}
+    set_thing(&(game.things), idx, thing)
 	},
 	.move_towards_target = proc(
 		frame_arena: ^virtual.Arena,
@@ -803,11 +798,11 @@ tasks :: [Task]TaskProc {
 	) {
 		prev_thing, thing: Thing = {}, {}
 		success: bool = false
-    prev_thing, success = get_thing(&(prev_game.things), idx)
-    if !success {return}
+		prev_thing, success = get_thing(&(prev_game.things), idx)
+		if !success {return}
 		thing, success = get_thing(&(game.things), idx)
-    if !success {return}
-		if .moves_towards_target in thing.temp_flags {
+		if !success {return}
+		if .moves_towards_target in prev_thing.temp_flags {
 			// get the directin towards target
 			target: Thing = thing // if theres no target then the target is itself
 			if t, s := get_thing(&(game.things), thing.target); s {target = t}
@@ -816,9 +811,9 @@ tasks :: [Task]TaskProc {
 			tile, _ := get_tile(game.level, linalg.to_i32(thing.pos))
 			friction: f32 = tile.friction
 			acceleration: f32 =
-				thing.running_strength * friction if .using_jetpack not_in thing.temp_flags else jetpack_strength
-      thing.frame_acceleration += acceleration * dir
-    /*
+				thing.running_strength * friction if .using_jetpack not_in prev_thing.temp_flags else jetpack_strength
+			thing.frame_acceleration += acceleration * dir
+			/*
 			drag_vector: [2]f32 =
 				linalg.normalize0(thing.velocity) *
 				drag_force(
@@ -827,7 +822,7 @@ tasks :: [Task]TaskProc {
 				)
     */
 			//new_thing.velocity = thing.velocity + delta_vel - drag_vector
-			set_thing(&(game.things), idx, new_thing)
+			set_thing(&(game.things), idx, thing)
 		}
 	},
 	.move_with_mouse = proc(
@@ -838,15 +833,18 @@ tasks :: [Task]TaskProc {
 		game: ^GameState,
 		idx: ThingIdx,
 	) {
-		things: ^ThingPool = &(game.things)
-		thing, success := get_thing(things, idx)
-		if success {
-			if .moves_with_mouse in thing.temp_flags {
-				mouse_strength :: 5.
-				thing.velocity = input.mouse_delta * mouse_strength
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
+		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
+		thing, success = get_thing(things, idx)
+		if !success {return}
+		if .moves_with_mouse in prev_thing.temp_flags {
+			mouse_strength :: 5.
+			thing.velocity = input.mouse_delta * mouse_strength
 
-				set_thing(things, idx, thing)
-			}
+			set_thing(things, idx, thing)
 		}
 	},
 	.move_with_wasd = proc(
@@ -857,54 +855,54 @@ tasks :: [Task]TaskProc {
 		game: ^GameState,
 		idx: ThingIdx,
 	) {
-		things: ^ThingPool = &(game.things)
-		thing, success := get_thing(things, idx)
-		if success {
-			if .moves_with_wasd in thing.temp_flags {
-				wasd_dir: [2]f32 = {}
-				if .W in input.pressed_buttons {
-					wasd_dir += {0, -1}
-				}
-				if .A in input.pressed_buttons {
-					wasd_dir += {-1, 0}
-				}
-				if .S in input.pressed_buttons {
-					wasd_dir += {0, 1}
-				}
-				if .D in input.pressed_buttons {
-					wasd_dir += {1, 0}
-				}
-				// (NOTE) while i have stopped residual drift when you ease off the gas
-				//  there is still drift across axis that you are no longer using
-				//  so if im going up, but then i go left or right, i will drift upwards
-				// i think
-				delta_vel: [2]f32 = {}
-				tile, _ := get_tile(game.level, linalg.to_i32(thing.pos))
-				friction: f32 = tile.friction
-				if linalg.length(wasd_dir) != 0 {
-					wasd_dir = wasd_dir / linalg.length(wasd_dir)
-					delta_vel = wasd_dir * thing.running_strength * friction * input.delta_time
-				} else {
-					wasd_dir = linalg.normalize0(-thing.velocity)
-					delta_vel =
-						wasd_dir *
-						min(
-							thing.running_strength * friction * input.delta_time,
-							linalg.length(-thing.velocity),
-						)
-				}
-				thing.velocity = thing.velocity + delta_vel
-
-				drag_vector: [2]f32 =
-					linalg.normalize0(thing.velocity) *
-					drag_force(
-						flow_velocity = -thing.velocity,
-						drag_coefficient = thing.drag_coefficient,
-					)
-				thing.velocity = thing.velocity - drag_vector
-
-				set_thing(things, idx, thing)
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
+		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
+		thing, success = get_thing(things, idx)
+		if !success {return}
+		if .moves_with_wasd in prev_thing.temp_flags {
+			wasd_dir: [2]f32 = {}
+			if .W in input.pressed_buttons {
+				wasd_dir += {0, -1}
 			}
+			if .A in input.pressed_buttons {
+				wasd_dir += {-1, 0}
+			}
+			if .S in input.pressed_buttons {
+				wasd_dir += {0, 1}
+			}
+			if .D in input.pressed_buttons {
+				wasd_dir += {1, 0}
+			}
+			// (NOTE) while i have stopped residual drift when you ease off the gas
+			//  there is still drift across axis that you are no longer using
+			//  so if im going up, but then i go left or right, i will drift upwards
+			// i think
+			delta_vel: [2]f32 = {}
+			tile, _ := get_tile(game.level, linalg.to_i32(thing.pos))
+			friction: f32 = tile.friction
+			if linalg.length(wasd_dir) != 0 {
+				wasd_dir = wasd_dir / linalg.length(wasd_dir)
+				delta_vel = wasd_dir * thing.running_strength * friction
+			} else {
+				wasd_dir = linalg.normalize0(-thing.velocity)
+				delta_vel =
+					wasd_dir *
+					min(thing.running_strength * friction, linalg.length(-thing.velocity))
+			}
+			thing.frame_acceleration += delta_vel
+
+			//drag_vector: [2]f32 =
+			//linalg.normalize0(thing.velocity) *
+			//drag_force(
+			//flow_velocity = -thing.velocity,
+			//drag_coefficient = thing.drag_coefficient,
+			//)
+			//thing.velocity = thing.velocity - drag_vector
+
+			set_thing(things, idx, thing)
 		}
 	},
 	.do_gravity = proc(
@@ -915,16 +913,18 @@ tasks :: [Task]TaskProc {
 		game: ^GameState,
 		idx: ThingIdx,
 	) {
-		things: ^ThingPool = &(game.things)
 		gravity_strength :: 100.
-		thing, success := get_thing(things, idx)
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
+		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
 		thing, success = get_thing(things, idx)
-		if success {
-			if .does_gravity in thing.temp_flags && .south not_in thing.on_wall {
-				thing.velocity.y = thing.velocity.y + gravity_strength * input.delta_time
-			}
-			set_thing(things, idx, thing)
+		if !success {return}
+		if .does_gravity in prev_thing.temp_flags && .south not_in thing.on_wall {
+			thing.frame_acceleration.y += gravity_strength
 		}
+		set_thing(things, idx, thing)
 	},
 	.move = proc(
 		frame_arena: ^virtual.Arena,
@@ -934,19 +934,25 @@ tasks :: [Task]TaskProc {
 		game: ^GameState,
 		idx: ThingIdx,
 	) {
-		things: ^ThingPool = &(game.things)
-		next_things: ^ThingPool = &(next_game.things)
-		thing: Thing
-		new_thing: Thing
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
 		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
 		thing, success = get_thing(things, idx)
-		new_thing, success = get_thing(next_things, idx)
-		if success && thing.velocity != {0, 0} {
+		if !success {return}
+
+		thing.velocity += thing.frame_acceleration * input.delta_time
+		drag_vector: [2]f32 =
+			linalg.normalize0(thing.velocity) *
+			drag_force(flow_velocity = -thing.velocity, drag_coefficient = thing.drag_coefficient)
+		thing.velocity -= drag_vector * input.delta_time
+		if thing.velocity != {0, 0} {
 			velocity := thing.velocity
 			movement: [2]f32 = velocity * input.delta_time
 			pos: [2]f32 = thing.pos
 			walls: Walls = thing.on_wall
-			if .ignore_level not_in thing.temp_flags {
+			if .ignore_level not_in prev_thing.temp_flags {
 				// MOVE //
 				// https://youtu.be/NbSee-XM7WA?si=AUetUTj1sKyZmTBY
 				cell: CellPos = linalg.to_i32(pos)
@@ -1002,12 +1008,34 @@ tasks :: [Task]TaskProc {
 				}
 				movement = pos - thing.pos
 			}
-			new_thing.on_wall = walls
-			new_thing.pos = thing.pos + movement
-			new_thing.velocity = velocity
-			set_thing(next_things, idx, new_thing)
+			thing.on_wall = walls
+			thing.pos = thing.pos + movement
+			thing.velocity = velocity
+			set_thing(things, idx, thing)
 		}
 	},
+  .move_with_camera = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
+		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
+		thing, success = get_thing(things, idx)
+		if !success {return}
+
+    if camera_idx := container_of(prev_game.cameras.head, ThingNode, "link").thing; .moves_with_camera in prev_thing.temp_flags && camera_idx != idx {
+      camera, success := get_thing(prev_things, camera_idx)
+      thing.pos += camera.velocity * prev_input.delta_time
+      set_thing(things, idx, thing)
+    }
+  },
 	.freeze = proc(
 		frame_arena: ^virtual.Arena,
 		prev_input: InputState,
@@ -1016,10 +1044,15 @@ tasks :: [Task]TaskProc {
 		game: ^GameState,
 		idx: ThingIdx,
 	) {
-		thing: Thing
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
 		success: bool
-		thing, success = get_thing(&(game.things), idx)
-		if .freezing in thing.temp_flags {
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
+		thing, success = get_thing(things, idx)
+		if !success {return}
+
+		if .freezing in prev_thing.temp_flags {
 			if tile, kind := get_tile(game.level, linalg.to_i32(thing.pos)); kind == .water {
 				set_tile(game.level, linalg.to_i32(thing.pos), .ice)
 			}
@@ -1037,7 +1070,7 @@ tasks :: [Task]TaskProc {
 		success: bool
 		thing, success = get_thing(&(game.things), idx)
 		if thing.on_click != {} && .left_mouse in input.pressed_buttons {
-			thing.on_click(frame_arena, prev_game, game, next_game, prev_input, input, idx)
+			thing.on_click(frame_arena, prev_input, input, prev_game, game, idx)
 		}
 	},
 }
@@ -1077,6 +1110,7 @@ resolve_things :: proc(
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .move_with_wasd)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .do_gravity)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .move)
+	resolve_task(frame_arena, prev_input, input, prev_game, game, .move_with_camera)
 	// i will want to make sure all stuff that can change level goes down here
 	// spawn_dot_on_click needs a new name since it can change levels as well now
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .freeze)
@@ -1189,7 +1223,46 @@ tick :: proc(
 	game.hot_key = prev_game.hot_key
 	game.hot_group = prev_game.hot_group
 	// mirror camera list
-	game.cameras.head, game.cameras.tail = prev_game.cameras.head, prev_game.cameras.tail
+	// remove invalid camera nodes
+	game.cameras.head, game.cameras.tail = {}, {}
+	iterator := list.iterator_head(prev_game.cameras, ThingNode, "link")
+	// populate new list with valid nodes from previous list
+	for camera_node in list.iterate_next(&iterator) {
+		if check_idx(&(prev_game.things), camera_node.thing) {
+			copy_node, err := virtual.new(frame_arena, ThingNode)
+			assert(err == .None)
+			copy_node.thing = camera_node.thing
+			list.push_back(&(game.cameras), &(copy_node.link))
+		}
+	}
+	if list.is_empty(&(game.cameras)) {
+		world_cam: Thing = easy_stationary_camera(
+			game.level,
+			level_center(game.level),
+			min(
+				f32(raylib.GetRenderWidth()) / f32(game.level.size.x),
+				f32(raylib.GetRenderHeight()) / f32(game.level.size.y),
+			) *
+			0.9,
+		)
+		world_cam_idx, _ := push_thing(&(game.things), world_cam)
+		camera_node, err := virtual.new(frame_arena, ThingNode)
+		assert(err == .None)
+		camera_node.thing = world_cam_idx
+		list.push_back(&(game.cameras), &(camera_node.link))
+	}
+  // camera cycling
+  if .right_mouse in input.pressed_buttons && .right_mouse not_in prev_input.pressed_buttons {
+    // cycle cameras if there is more than one
+    if game.cameras.head.next != {} {
+      game.cameras.head.prev = game.cameras.tail
+      game.cameras.tail.next = game.cameras.head
+      game.cameras.head = game.cameras.head.next
+      game.cameras.tail = game.cameras.tail.next
+      game.cameras.head.prev = {}
+      game.cameras.tail.next = {}
+    }
+  }
 	// mirror level
 	for kind, i in prev_game.level.data {
 		game.level.data[i] = kind
@@ -1222,48 +1295,8 @@ tick :: proc(
 		game.hot_key = 4
 	}
 
-	// camera cycling
-	if .right_mouse in input.pressed_buttons && .right_mouse not_in prev_input.pressed_buttons {
-		// cycle cameras if there is more than one
-		if game.cameras.head.next != {} {
-			game.cameras.head.prev = game.cameras.tail
-			game.cameras.tail.next = game.cameras.head
-			game.cameras.head = game.cameras.head.next
-			game.cameras.tail = game.cameras.tail.next
-			game.cameras.head.prev = {}
-			game.cameras.tail.next = {}
-		}
-	}
 	resolve_things(frame_arena, prev_input, input, prev_game, game)
 
-	// remove invalid camera nodes
-	game.cameras.head, game.cameras.tail = {}, {}
-	iterator := list.iterator_head(prev_game.cameras, ThingNode, "link")
-	// populate new list with valid nodes from previous list
-	for camera_node in list.iterate_next(&iterator) {
-		if check_idx(&(game.things), camera_node.thing) {
-			copy_node, err := virtual.new(frame_arena, ThingNode)
-			assert(err == .None)
-			copy_node.thing = camera_node.thing
-			list.push_back(&(game.cameras), &(copy_node.link))
-		}
-	}
-	if list.is_empty(&(game.cameras)) {
-		world_cam: Thing = easy_stationary_camera(
-			game.level,
-			level_center(game.level),
-			min(
-				f32(raylib.GetRenderWidth()) / f32(game.level.size.x),
-				f32(raylib.GetRenderHeight()) / f32(game.level.size.y),
-			) *
-			0.9,
-		)
-		world_cam_idx, _ := push_thing(&(game.things), world_cam)
-		camera_node, err := virtual.new(frame_arena, ThingNode)
-		assert(err == .None)
-		camera_node.thing = world_cam_idx
-		list.push_back(&(game.cameras), &(camera_node.link))
-	}
 }
 /*
 tick :: proc(
@@ -1344,7 +1377,7 @@ tick :: proc(
 }
 */
 // drawing
-draw_game :: proc(game: GameState) {
+draw_game :: proc(game: ^GameState) {
 	things := game.things
 	draw_level(&things, game.level, container_of(game.cameras.head, ThingNode, "link").thing)
 	draw_things(&things, container_of(game.cameras.head, ThingNode, "link").thing)
@@ -1412,7 +1445,7 @@ setup_game :: proc(
 	world_cam_node, err := virtual.new(first_frame_arena, ThingNode)
 	assert(err == .None)
 	world_cam_node.thing = world_cam_idx
-	list.push_back(&(game2.cameras), &(world_cam_node.link))
+	list.push_back(&(game1.cameras), &(world_cam_node.link))
 	// mouse
 	mouse_thing: Thing = easy_mouse(game1.level)
 	mouse_thing.zoom = world_cam.zoom * 2
@@ -1447,10 +1480,12 @@ main :: proc() {
 
 
 	setup_rendering()
+
 	prev_frame_arena, frame_arena: ^virtual.Arena = &frame1, &frame2
 	prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
 	prev_game: ^GameState = &game1
 	game: ^GameState = &game2
+	tick(prev_frame_arena, frame_arena, prev_input, input, prev_game, game)
 
 	/*
   for !raylib.IsKeyDown(raylib.KeyboardKey.SPACE) {
@@ -1476,8 +1511,8 @@ main :: proc() {
 		// juggle inputs
 		prev_input = input
 		input = get_input_state()
-
 		tick(prev_frame_arena, frame_arena, prev_input, input, prev_game, game)
+
 		// rendering (TODO) section this off into a different loop
 		raylib.BeginDrawing()
 		raylib.ClearBackground(raylib.LIGHTGRAY)
