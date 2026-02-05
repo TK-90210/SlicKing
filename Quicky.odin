@@ -1,5 +1,6 @@
 package main
 import "base:runtime"
+import "core:bytes"
 import "core:container/intrusive/list"
 import "core:fmt"
 import "core:math"
@@ -7,11 +8,14 @@ import "core:math/linalg"
 import "core:math/rand"
 import "core:mem"
 import "core:mem/virtual"
+import "core:slice"
+import "core:sys/orca"
 import "vendor:raylib"
 
 // compiler flags //
 STOP_ON_MISMATCHED_GENERATION_TAGS :: true
 STOP_ON_POOL_OVERFLOW :: false
+CHECK_EVERY_SAVE :: true
 
 // Globals //
 global_scratch_arena: virtual.Arena = {}
@@ -242,8 +246,8 @@ easy_tiles :: [TileKind]Tile {
 
 // Level //
 Level :: struct {
-	data: []TileKind,
 	size: [2]i32,
+	data: []TileKind,
 }
 level_center :: proc(level: Level) -> [2]f32 {
 	return linalg.to_f32(level.size) * 0.5
@@ -407,7 +411,6 @@ Thing :: struct {
 	target:             ThingIdx,
 	frame_acceleration: [2]f32,
 	//on_corners: Corners,
-	level:              Level, // 
 	flags:              ThingFlags,
 	temp_flags:         ThingFlags,
 
@@ -432,7 +435,6 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 		size             = 0, // size of a point is 0
 		on_wall          = Walls{}, // on_wall
 		target           = ThingIdx{}, // target
-		level            = level, // level
 		flags            = {.does_gravity, .freezing}, // flags
 		temp_flags       = {.does_gravity, .freezing}, // temp_flags
 		color            = raylib.BLUE,
@@ -454,20 +456,19 @@ easy_slicking :: proc(
 	slicking_thing: Thing,
 ) {
 	slicking_thing = {
-		pos = starting_pos, // position
-		velocity = {0, 0}, // velocity
+		pos              = starting_pos, // position
+		velocity         = {0, 0}, // velocity
 		running_strength = 4, // running_strength
 		drag_coefficient = 1.6, // drag_coefficient
-		size = 0, // size
-		on_wall = Walls{}, // on_wall
-		target = mouse_target, // target
-		level = level, // level
-		flags = {.moves_with_wasd}, // flags
-		temp_flags = {.moves_with_wasd}, // temp_flags
-		color = raylib.BLACK,
-		draw_size = {0.5, 0.5},
-		draw_thing = .draw_dot, // draw_thing
-		on_click = .slicking, // on_click
+		size             = 0, // size
+		on_wall          = Walls{}, // on_wall
+		target           = mouse_target, // target
+		flags            = {.moves_with_wasd}, // flags
+		temp_flags       = {.moves_with_wasd}, // temp_flags
+		color            = raylib.BLACK,
+		draw_size        = {0.5, 0.5},
+		draw_thing       = .draw_dot, // draw_thing
+		on_click         = .slicking, // on_click
 	}
 	return slicking_thing
 }
@@ -475,7 +476,6 @@ easy_stationary_camera :: proc(level: Level, pos: [2]f32, zoom: f32) -> (camera_
 	camera_thing = {
 		pos        = pos,
 		zoom       = zoom,
-		level      = level,
 		draw_thing = .draw_nothing,
 	}
 	return camera_thing
@@ -490,7 +490,6 @@ easy_mouse :: proc(level: Level) -> (mouse_thing: Thing) {
 		//{}, // on corners
 		on_wall          = Walls{}, // on_wall
 		target           = ThingIdx{},
-		level            = level, // level
 		flags            = {.moves_with_camera, .moves_with_mouse, .ignore_level}, // flags
 		temp_flags       = {.moves_with_camera, .moves_with_mouse, .ignore_level}, // temp_flags
 		color            = raylib.RED,
@@ -600,6 +599,7 @@ push_thing :: proc(thing_pool: ^ThingPool, thing: Thing) -> (idx: ThingIdx, succ
 	idxs: []ThingIdx = {}
 	idxs, successful = push_things(scratch.arena, thing_pool, thing_slice)
 	idx = idxs[0]
+
 	virtual.arena_temp_end(scratch)
 	return idx, successful
 }
@@ -783,7 +783,10 @@ tasks :: [Task]TaskProc {
 				wasd_dir = linalg.normalize0(-thing.velocity)
 				delta_vel =
 					wasd_dir *
-					min(thing.running_strength * friction, linalg.length(-thing.velocity / input.delta_time))
+					min(
+						thing.running_strength * friction,
+						linalg.length(-thing.velocity / input.delta_time),
+					)
 			}
 			thing.frame_acceleration += delta_vel
 
@@ -850,7 +853,7 @@ tasks :: [Task]TaskProc {
 				// https://youtu.be/NbSee-XM7WA?si=AUetUTj1sKyZmTBY
 				cell: CellPos = linalg.to_i32(pos)
 				if .north in thing.on_wall {
-					tile, kind := get_tile(thing.level, cell + {0, -1})
+					tile, kind := get_tile(prev_game.level, cell + {0, -1})
 					if velocity.y > 0 || !tile.solid {
 						walls -= {.north}
 					} else {
@@ -858,7 +861,7 @@ tasks :: [Task]TaskProc {
 					}
 				}
 				if .east in thing.on_wall {
-					tile, kind := get_tile(thing.level, cell + {1, 0})
+					tile, kind := get_tile(prev_game.level, cell + {1, 0})
 					if velocity.x < 0 || !tile.solid {
 						walls -= {.east}
 					} else {
@@ -866,7 +869,7 @@ tasks :: [Task]TaskProc {
 					}
 				}
 				if .south in thing.on_wall {
-					tile, kind := get_tile(thing.level, cell + {0, 1})
+					tile, kind := get_tile(prev_game.level, cell + {0, 1})
 					if velocity.y < 0 || !tile.solid {
 						walls -= {.south}
 					} else {
@@ -874,7 +877,7 @@ tasks :: [Task]TaskProc {
 					}
 				}
 				if .west in thing.on_wall {
-					tile, kind := get_tile(thing.level, cell + {-1, 0})
+					tile, kind := get_tile(prev_game.level, cell + {-1, 0})
 					if velocity.x > 0 || !tile.solid {
 						walls -= {.west}
 					} else {
@@ -883,7 +886,7 @@ tasks :: [Task]TaskProc {
 				}
 				movement = velocity * input.delta_time
 				if movement != {} {
-					len, hit := point_cast_tiled(thing.level, pos, movement)
+					len, hit := point_cast_tiled(prev_game.level, pos, movement)
 					pos = pos + len * linalg.normalize0(movement)
 					if .north in hit {
 						pos.y += 0.05
@@ -970,7 +973,7 @@ tasks :: [Task]TaskProc {
 		success: bool
 		thing, success = get_thing(&(game.things), idx)
 		if thing.on_click != .do_nothing && .left_mouse in input.pressed_buttons {
-      click_actions := click_actions
+			click_actions := click_actions
 			click_actions[thing.on_click](frame_arena, prev_input, input, prev_game, game, idx)
 		}
 	},
@@ -1130,6 +1133,7 @@ GameButton :: enum {
 	S,
 	D,
 	tab,
+	ctrl,
 }
 GameButtons :: bit_set[GameButton]
 InputState :: struct {
@@ -1182,6 +1186,7 @@ get_input_state :: proc() -> InputState {
 	if raylib.IsKeyDown(raylib.KeyboardKey.S) {pressed_buttons += {.S}}
 	if raylib.IsKeyDown(raylib.KeyboardKey.D) {pressed_buttons += {.D}}
 	if raylib.IsKeyDown(raylib.KeyboardKey.TAB) {pressed_buttons += {.tab}}
+	if raylib.IsKeyDown(raylib.KeyboardKey.LEFT_CONTROL) {pressed_buttons += {.ctrl}}
 	return {
 		1. / 60.,
 		//raylib.GetFrameTime(),
@@ -1192,11 +1197,11 @@ get_input_state :: proc() -> InputState {
 }
 // Game State
 GameState :: struct {
+	hot_key:   i32,
+	hot_group: HotGroup,
 	level:     Level,
 	things:    ThingPool,
 	cameras:   list.List,
-	hot_key:   i32,
-	hot_group: HotGroup,
 }
 HotGroup :: enum {
 	edit_tiles,
@@ -1212,6 +1217,12 @@ tick :: proc(
 	prev_game: ^GameState,
 	game: ^GameState,
 ) {
+	// serialize_game
+	if .S in input.pressed_buttons &&
+	   .S not_in prev_input.pressed_buttons &&
+	   .ctrl in input.pressed_buttons {
+		serialize_game(prev_input, prev_game)
+	}
 	// mirror prev_game to game
 	// mirror hotkeys
 	game.hot_key = prev_game.hot_key
@@ -1471,6 +1482,122 @@ setup_game :: proc(
 	list.push_back(&(game1.cameras), &(mouse_node.link))
 
 	return prev_input, input_state, game1, game2
+}
+
+// SERIALIZATION //
+serialize_game :: proc(prev_input: InputState, prev_game: ^GameState) {
+	scratch := get_scratch()
+
+	pos, velocity, running_strength, drag_coefficient, size, zoom, on_wall, target, frame_acceleration, flags, temp_flags, color, draw_size, draw_thing, on_click :=
+		soa_unzip(prev_game.things.thing)
+
+
+	buffers: [][]byte = {
+			// Input //
+			slice.to_bytes([]InputState{prev_input}),
+			// Game //
+			slice.to_bytes([]i32{prev_game.hot_key}),
+			slice.to_bytes([]HotGroup{prev_game.hot_group}),
+			// level //
+			slice.to_bytes([][2]i32{prev_game.level.size}),
+			slice.to_bytes(prev_game.level.data),
+			// things //
+			// offset
+			slice.to_bytes([]u32{prev_game.things.offset}),
+			// generations
+			slice.to_bytes(prev_game.things.generations),
+			// free
+			slice.to_bytes(prev_game.things.free),
+			// thing
+      slice.to_bytes(pos[:prev_game.things.offset]),
+      slice.to_bytes(velocity[:prev_game.things.offset]),
+      slice.to_bytes(running_strength[:prev_game.things.offset]),
+      slice.to_bytes(drag_coefficient[:prev_game.things.offset]),
+      slice.to_bytes(size[:prev_game.things.offset]),
+      slice.to_bytes(zoom[:prev_game.things.offset]),
+      slice.to_bytes(on_wall[:prev_game.things.offset]),
+      slice.to_bytes(target[:prev_game.things.offset]),
+      slice.to_bytes(frame_acceleration[:prev_game.things.offset]),
+      slice.to_bytes(flags[:prev_game.things.offset]),
+      slice.to_bytes(temp_flags[:prev_game.things.offset]),
+      slice.to_bytes(color[:prev_game.things.offset]),
+      slice.to_bytes(draw_size[:prev_game.things.offset]),
+      slice.to_bytes(draw_thing[:prev_game.things.offset]),
+      slice.to_bytes(on_click[:prev_game.things.offset]),
+		}
+	big_buff, err := bytes.concatenate_safe(buffers[:], virtual.arena_allocator(scratch.arena))
+	raylib.SaveFileData("seri", raw_data(big_buff), i32(len(big_buff)))
+
+	when CHECK_EVERY_SAVE {
+		// we don't need the old scratch for the check so we'll just empty it real quick
+		virtual.arena_temp_end(scratch)
+		scratch = get_scratch()
+		seri_input, seri_game := load_game(scratch.arena)
+		assert(seri_input == prev_input)
+		assert(seri_game.hot_key == prev_game.hot_key)
+		assert(seri_game.hot_group == prev_game.hot_group)
+		assert(seri_game.level.size == prev_game.level.size)
+		for kind, i in prev_game.level.data {
+			assert(seri_game.level.data[i] == kind)
+		}
+    assert(seri_game.things.offset == prev_game.things.offset)
+    for i in 0..<prev_game.things.offset {
+      assert(seri_game.things.generations[i] == prev_game.things.generations[i])
+      assert(seri_game.things.free[i] == prev_game.things.free[i])
+      assert(seri_game.things.thing[i].pos == prev_game.things.thing[i].pos)
+      assert(seri_game.things.thing[i].velocity == prev_game.things.thing[i].velocity)
+      assert(seri_game.things.thing[i].running_strength == prev_game.things.thing[i].running_strength)
+      assert(seri_game.things.thing[i].drag_coefficient == prev_game.things.thing[i].drag_coefficient)
+      assert(seri_game.things.thing[i].size == prev_game.things.thing[i].size)
+      assert(seri_game.things.thing[i].zoom == prev_game.things.thing[i].zoom)
+      assert(seri_game.things.thing[i].on_wall == prev_game.things.thing[i].on_wall)
+      assert(seri_game.things.thing[i].target == prev_game.things.thing[i].target)
+      assert(seri_game.things.thing[i].frame_acceleration == prev_game.things.thing[i].frame_acceleration)
+      assert(seri_game.things.thing[i].flags == prev_game.things.thing[i].flags)
+      assert(seri_game.things.thing[i].temp_flags == prev_game.things.thing[i].temp_flags)
+      assert(seri_game.things.thing[i].color == prev_game.things.thing[i].color)
+      assert(seri_game.things.thing[i].draw_size == prev_game.things.thing[i].draw_size)
+      assert(seri_game.things.thing[i].draw_thing == prev_game.things.thing[i].draw_thing)
+      assert(seri_game.things.thing[i].on_click == prev_game.things.thing[i].on_click)
+    }
+	}
+	// prev_game.level data is a problem
+	// prev_game.thing_pool is a problem
+	// cameras might require ptr arithmetic on load
+	virtual.arena_temp_end(scratch)
+}
+load_game :: proc(arena: ^virtual.Arena) -> (seri_input: InputState, seri_game: GameState) {
+	data_size: i32 = 0
+	seri_data: [^]byte = raylib.LoadFileData("seri", &data_size)
+	seri_bytes: []byte = seri_data[:data_size]
+
+	offset: i32 = 0
+
+	seri_input = slice.reinterpret([]InputState, seri_bytes[offset:size_of(InputState)])[0]
+	offset += size_of(InputState)
+
+	seri_game.hot_key = slice.reinterpret([]i32, seri_bytes[offset:offset + size_of(i32)])[0]
+	offset += size_of(i32)
+
+	seri_game.hot_group =
+		slice.reinterpret([]HotGroup, seri_bytes[offset:offset + size_of(HotGroup)])[0]
+	offset += size_of(HotGroup)
+
+	seri_game.level.size =
+		slice.reinterpret([][2]i32, seri_bytes[offset:offset + size_of([2]f32)])[0]
+	offset += size_of([2]f32)
+
+	level_count: i32 = seri_game.level.size.x * seri_game.level.size.y
+	seri_game.level.data = slice.reinterpret(
+		[]TileKind,
+		seri_bytes[offset:offset + size_of(TileKind) * level_count],
+	)
+  offset += size_of(TileKind) * level_count
+
+  seri_game.things.offset = slice.reinterpret([]u32, seri_bytes[offset:offset + size_of(u32)])[0]
+  
+
+	return seri_input, seri_game
 }
 
 main :: proc() {
