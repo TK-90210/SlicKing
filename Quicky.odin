@@ -1,3 +1,13 @@
+// TODO TOMORROW
+// Free List
+// Ice Gun
+// Snow Gun
+// Enemy
+// Enemy Gun
+// Health
+// Snow Golem
+// Carrot Gun
+// Level
 package main
 import "base:runtime"
 import "core:bytes"
@@ -321,8 +331,14 @@ set_tile :: proc {
 	set_tile_pos,
 }
 
-paint_line :: proc(level: Level, start: [2]f32, end: [2]f32, paint_mask: SetOfTiles, paint: TileKind) {
-  velocity: [2]f32 = end - start
+paint_line :: proc(
+	level: Level,
+	start: [2]f32,
+	end: [2]f32,
+	paint_mask: SetOfTiles,
+	paint: TileKind,
+) {
+	velocity: [2]f32 = end - start
 	mag: f32 = linalg.length(velocity)
 	//re: = { x: cos(rdAngle) * mag + ro.x, y: sin(rdAngle) * mag + ro.y}
 	dir: [2]f32 = linalg.normalize(velocity)
@@ -360,7 +376,7 @@ paint_line :: proc(level: Level, start: [2]f32, end: [2]f32, paint_mask: SetOfTi
 	prev_len: f32 = 0
 	for ; len < mag; len = min(rayLength.x, rayLength.y) {
 		if tile, kind := get_tile(level, cell); kind in paint_mask {
-      set_tile(level, cell, paint)
+			set_tile(level, cell, paint)
 		}
 
 		if (rayLength.x < rayLength.y) {
@@ -478,12 +494,12 @@ Thing :: struct {
 	color:              raylib.Color,
 	draw_size:          [2]f32,
 	draw_thing:         Draw,
-  // on click
+	// on click
 	on_click:           ClickAction, // is not a task, it just needs the same signature
-  // timers
-  timer_length:       f32,
-  timer:              f32,
-  on_timeout:         TimeoutAction,
+	// timers
+	timer_length:       f32,
+	timer:              f32,
+	on_timeout:         TimeoutAction,
 }
 nil_thing :: proc() -> Thing {
 	thing: Thing = {}
@@ -504,9 +520,9 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 		color            = raylib.BLUE,
 		draw_size        = {0.5, 0.5},
 		draw_thing       = .draw_dot, // draw_thing
-    timer = 0,
-    timer_length = 5,
-    on_timeout = .free_yourself
+		timer            = 0,
+		timer_length     = 5,
+		on_timeout       = .free_yourself,
 	}
 
 	return thing
@@ -578,6 +594,7 @@ ThingPool :: struct {
 	offset:      u32,
 	generations: []u32, // 4 bytes
 	free:        []bool, // 1 byte
+	free_list:   list.List,
 	thing:       #soa[]Thing,
 }
 init_things :: proc(arena: ^virtual.Arena, thing_pool: ^ThingPool, count: u32) {
@@ -658,29 +675,59 @@ push_things :: proc(
 }
 */
 push_thing :: proc(thing_pool: ^ThingPool, thing: Thing) -> (idx: ThingIdx, successful: bool) {
-  successful = thing_pool.offset + 1 < u32(len(thing_pool.thing))
-	when STOP_ON_POOL_OVERFLOW {
-		if !successful {
-			panic("pool is out of memory")
-		}
-	} else {
-		if !successful {
-			return {}, successful
+	free_thing: ThingIdx = {}
+	is_free_thing: bool = false
+	for thing_pool.free_list.head != nil {
+		free_node: ^ThingNode = container_of(thing_pool.free_list.head, ThingNode, "link")
+		list.pop_front(&(thing_pool.free_list))
+		if free_node.thing.idx < thing_pool.offset {
+      generation: u32 = thing_pool.generations[free_node.thing.idx]
+      if free_node.thing.generation == generation {
+        free_thing = free_node.thing
+        is_free_thing = true
+        break
+      }
 		}
 	}
-  thing_pool.generations[thing_pool.offset] += 1
-  idx = {
-    idx = thing_pool.offset,
-    generation = thing_pool.generations[thing_pool.offset]
-  }
-  thing_pool.offset += 1
-  successful = set_thing(thing_pool, idx, thing)
+	if is_free_thing {
+		idx = free_thing
+		idx.generation += 1
+		thing_pool.generations[idx.idx] += 1
+    thing_pool.free[idx.idx] = false
+		successful = set_thing(thing_pool, idx, thing)
+
+	} else {
+		successful = thing_pool.offset + 1 < u32(len(thing_pool.thing))
+		when STOP_ON_POOL_OVERFLOW {
+			if !successful {
+				panic("pool is out of memory")
+			}
+		} else {
+			if !successful {
+				return {}, successful
+			}
+		}
+		thing_pool.generations[thing_pool.offset] += 1
+		idx = {
+			idx        = thing_pool.offset,
+			generation = thing_pool.generations[thing_pool.offset],
+		}
+		thing_pool.offset += 1
+    thing_pool.free[idx.idx] = false
+		successful = set_thing(thing_pool, idx, thing)
+	}
 	return idx, successful
 }
-free_thing :: proc(thing_pool: ^ThingPool, idx: ThingIdx) {
-  if check_idx(thing_pool, idx) {
-    thing_pool.free[idx.idx] = true
-  }
+free_thing :: proc(arena: ^virtual.Arena, thing_pool: ^ThingPool, idx: ThingIdx) {
+	if check_idx(thing_pool, idx) {
+		thing_pool.free[idx.idx] = true
+
+		free_node, err := virtual.new(arena, ThingNode)
+		if err == .None {
+			free_node.thing = idx
+			list.push_front(&(thing_pool.free_list), &(free_node.link))
+		}
+	}
 }
 
 draw_things :: proc(thing_pool: ^ThingPool, camera_idx: ThingIdx) {
@@ -690,7 +737,7 @@ draw_things :: proc(thing_pool: ^ThingPool, camera_idx: ThingIdx) {
 			generation = thing_pool.generations[i],
 		}
 		thing, successful := get_thing(thing_pool, idx)
-    if !successful {continue}
+		if !successful {continue}
 		drawing := drawing
 		drawing[thing.draw_thing](thing_pool, thing, camera_idx)
 		if i == thing_pool.offset - 1 {
@@ -723,7 +770,7 @@ TaskProc :: proc(
 )
 Task :: enum {
 	do_nothing,
-  tick_timer,
+	tick_timer,
 	prepare_next_thing,
 	move_towards_target,
 	move_with_mouse,
@@ -744,7 +791,7 @@ tasks :: [Task]TaskProc {
 		idx: ThingIdx,
 	) {
 	},
-  .tick_timer = proc(
+	.tick_timer = proc(
 		frame_arena: ^virtual.Arena,
 		prev_input: InputState,
 		input: InputState,
@@ -759,15 +806,22 @@ tasks :: [Task]TaskProc {
 		thing, success = get_thing(&(game.things), idx)
 		if !success {return}
 
-    if thing.timer_length > 0 && thing.timer >= 0 {
-      thing.timer += input.delta_time
-      if thing.timer > thing.timer_length {
-        timeout_action := timeout_action
-        timeout_action[thing.on_timeout](frame_arena, prev_input, input, prev_game, game, idx)
-      }
-    }
-    set_thing(&(game.things), idx, thing)
-  },
+		if thing.timer_length > 0 && thing.timer >= 0 {
+			thing.timer += input.delta_time
+			if thing.timer > thing.timer_length {
+				timeout_action := timeout_action
+				timeout_action[thing.on_timeout](
+					frame_arena,
+					prev_input,
+					input,
+					prev_game,
+					game,
+					idx,
+				)
+			}
+		}
+		set_thing(&(game.things), idx, thing)
+	},
 	.prepare_next_thing = proc(
 		frame_arena: ^virtual.Arena,
 		prev_input: InputState,
@@ -1043,7 +1097,7 @@ tasks :: [Task]TaskProc {
 		if !success {return}
 
 		if .freezing in prev_thing.temp_flags {
-      paint_line(game.level, prev_thing.pos, thing.pos, {.water}, .ice)
+			paint_line(game.level, prev_thing.pos, thing.pos, {.water}, .ice)
 		}
 	},
 	.handle_click = proc(
@@ -1057,6 +1111,7 @@ tasks :: [Task]TaskProc {
 		thing: Thing
 		success: bool
 		thing, success = get_thing(&(game.things), idx)
+		if !success {return}
 		if thing.on_click != .do_nothing && .left_mouse in input.pressed_buttons {
 			click_actions := click_actions
 			click_actions[thing.on_click](frame_arena, prev_input, input, prev_game, game, idx)
@@ -1122,8 +1177,8 @@ click_actions :: [ClickAction]TaskProc {
 		switch game.hot_group {
 		case .edit_tiles:
 			kind: TileKind = TileKind(linalg.min(i32(TileKind.outside) - 1, game.hot_key))
-      paint_line(game.level, prev_thing.pos, thing.pos, Every_Tile, kind)
-			//set_tile(game.level, linalg.to_i32(thing.pos), kind)
+			paint_line(game.level, prev_thing.pos, thing.pos, Every_Tile, kind)
+		//set_tile(game.level, linalg.to_i32(thing.pos), kind)
 		case .edit_things:
 			if game.hot_key < 2 {
 				if tile, _ := get_tile(game.level, linalg.to_i32(thing.pos)); !tile.solid {
@@ -1163,7 +1218,7 @@ click_actions :: [ClickAction]TaskProc {
 }
 TimeoutAction :: enum {
 	do_nothing,
-  free_yourself,
+	free_yourself,
 }
 timeout_action :: [TimeoutAction]TaskProc {
 	.do_nothing = proc(
@@ -1174,7 +1229,7 @@ timeout_action :: [TimeoutAction]TaskProc {
 		game: ^GameState,
 		idx: ThingIdx,
 	) {},
-  .free_yourself = proc(
+	.free_yourself = proc(
 		frame_arena: ^virtual.Arena,
 		prev_input: InputState,
 		input: InputState,
@@ -1182,8 +1237,8 @@ timeout_action :: [TimeoutAction]TaskProc {
 		game: ^GameState,
 		idx: ThingIdx,
 	) {
-    free_thing(&(game.things), idx)
-  },
+		free_thing(frame_arena, &(game.things), idx)
+	},
 }
 
 resolve_task :: proc(
@@ -1333,6 +1388,16 @@ tick :: proc(
 	prev_game: ^GameState,
 	game: ^GameState,
 ) {
+	// mirror things to new frame_arena
+	game.things.free_list = {}
+	free_iterator := list.iterator_head(prev_game.things.free_list, ThingNode, "link")
+	for free_node in list.iterate_next(&free_iterator) {
+		copy_node, err := virtual.new(frame_arena, ThingNode)
+		if err == .None {
+			copy_node.thing = free_node.thing
+			list.push_back(&(game.things.free_list), &(copy_node.link))
+		}
+	}
 	// serialize_game
 	if .S in input.pressed_buttons &&
 	   .S not_in prev_input.pressed_buttons &&
@@ -1351,9 +1416,10 @@ tick :: proc(
 	for camera_node in list.iterate_next(&iterator) {
 		if check_idx(&(prev_game.things), camera_node.thing) {
 			copy_node, err := virtual.new(frame_arena, ThingNode)
-			assert(err == .None)
-			copy_node.thing = camera_node.thing
-			list.push_back(&(game.cameras), &(copy_node.link))
+			if err == .None {
+				copy_node.thing = camera_node.thing
+				list.push_back(&(game.cameras), &(copy_node.link))
+			}
 		}
 	}
 	if list.is_empty(&(game.cameras)) {
@@ -1466,8 +1532,8 @@ setup_game_with_load :: proc(
 	game1: GameState,
 	game2: GameState,
 ) {
-  prev_input, game1 = load_game(arena, first_frame_arena)
-  // setup next game
+	prev_input, game1 = load_game(arena, first_frame_arena)
+	// setup next game
 	input_state = {}
 	level_err: runtime.Allocator_Error = .None
 	game2.level.size = game1.level.size
@@ -1576,6 +1642,26 @@ serialize_game :: proc(prev_input: InputState, prev_game: ^GameState) -> (succes
 		camera_index += 1
 	}
 
+	// free list
+	free_node_count: u32 = 0
+	free_iterator := list.iterator_head(prev_game.things.free_list, ThingNode, "link")
+	for free_node in list.iterate_next(&free_iterator) {
+		free_node_count += 1
+	}
+	free_list_slice: []ThingIdx
+	free_list_slice, err = virtual.make(scratch.arena, []ThingIdx, free_node_count)
+	if err != .None {
+		virtual.arena_temp_end(scratch)
+		return false
+	}
+	free_iterator = list.iterator_head(prev_game.things.free_list, ThingNode, "link")
+	free_index: i32 = 0
+	for free_node in list.iterate_next(&free_iterator) {
+		free_list_slice[free_index] = free_node.thing
+		free_index += 1
+	}
+
+
 	buffers: [][]byte = {
 		// Input //
 		slice.to_bytes([]InputState{prev_input}),
@@ -1591,6 +1677,8 @@ serialize_game :: proc(prev_input: InputState, prev_game: ^GameState) -> (succes
 		// generations
 		slice.to_bytes(prev_game.things.generations[:prev_game.things.offset]),
 		// free
+		slice.to_bytes([]u32{free_node_count}),
+		slice.to_bytes(free_list_slice),
 		slice.to_bytes(prev_game.things.free[:prev_game.things.offset]),
 		// thing
 		slice.to_bytes(aos_things),
@@ -1622,6 +1710,15 @@ serialize_game :: proc(prev_input: InputState, prev_game: ^GameState) -> (succes
 		for i in 0 ..< prev_game.things.offset {
 			assert(prev_game.things.thing[i] == seri_game.things.thing[i])
 		}
+		free_iterator = list.iterator_head(prev_game.things.free_list, ThingNode, "link")
+		seri_free_iterator := list.iterator_head(seri_game.things.free_list, ThingNode, "link")
+		for free_node in list.iterate_next(&free_iterator) {
+			seri_free_node, ok := list.iterate_next(&seri_free_iterator)
+			assert(ok)
+			assert(free_node.thing == seri_free_node.thing)
+		}
+
+
 		camera_iterator = list.iterator_head(prev_game.cameras, ThingNode, "link")
 		seri_camera_iterator := list.iterator_head(seri_game.cameras, ThingNode, "link")
 		for camera in list.iterate_next(&camera_iterator) {
@@ -1684,6 +1781,19 @@ load_game :: proc(
 		seri_bytes[offset:offset + size_of(u32) * seri_game.things.offset],
 	)
 	offset += size_of(u32) * seri_game.things.offset
+
+	seri_free_count: u32 = slice.reinterpret([]u32, seri_bytes[offset:offset + size_of(u32)])[0]
+	offset += size_of(u32)
+	seri_free_things: []ThingIdx = slice.reinterpret(
+		[]ThingIdx,
+		seri_bytes[offset:offset + size_of(ThingIdx) * seri_free_count],
+	)
+	offset += size_of(ThingIdx) * seri_free_count
+	for free_thing in seri_free_things {
+		free_node, err := virtual.new(frame_arena, ThingNode)
+		free_node.thing = free_thing
+		list.push_back(&(seri_game.things.free_list), &(free_node.link))
+	}
 
 	seri_free: []bool = slice.reinterpret(
 		[]bool,
@@ -1840,6 +1950,6 @@ main :: proc() {
 		raylib.EndDrawing()
 
 	}
-  //serialize_game(prev_input, prev_game)
+	//serialize_game(prev_input, prev_game)
 	raylib.CloseWindow()
 }
