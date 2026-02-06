@@ -1,6 +1,4 @@
 // TODO TOMORROW
-// Free List
-// Ice Gun
 // Snow Gun
 // Enemy
 // Enemy Gun
@@ -467,6 +465,7 @@ ThingFlags :: bit_set[enum {
 	using_jetpack,
 	camera,
 	moves_towards_target,
+	moves_with_target,
 	moves_with_mouse,
 	moves_with_camera,
 	moves_with_wasd,
@@ -474,6 +473,8 @@ ThingFlags :: bit_set[enum {
 	freezing,
 	ignore_level,
 	ignore_friction,
+	shoots_ice,
+	shooting,
 }]
 // THING //
 Thing :: struct {
@@ -485,6 +486,8 @@ Thing :: struct {
 	zoom:               f32,
 	on_wall:            Walls,
 	target:             ThingIdx,
+	inventory1:         ThingIdx,
+	inventory2:         ThingIdx,
 	frame_acceleration: [2]f32,
 	//on_corners: Corners,
 	flags:              ThingFlags,
@@ -500,6 +503,8 @@ Thing :: struct {
 	timer_length:       f32,
 	timer:              f32,
 	on_timeout:         TimeoutAction,
+	// on contact
+	on_contact:         WallContactAction,
 }
 nil_thing :: proc() -> Thing {
 	thing: Thing = {}
@@ -550,6 +555,41 @@ easy_slicking :: proc(
 		on_click         = .slicking, // on_click
 	}
 	return slicking_thing
+}
+easy_ice_gun :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (ice_gun: Thing) {
+	fire_rate: f32 = 0.3
+	target, success := get_thing(thing_pool, user_idx)
+	ice_gun = {
+		pos          = target.pos,
+		target       = user_idx,
+		flags        = {.moves_with_target, .ignore_level, .ignore_friction, .shoots_ice},
+		temp_flags   = {.moves_with_target, .ignore_level, .ignore_friction, .shoots_ice},
+		timer_length = fire_rate,
+		timer        = -1,
+		on_timeout   = .do_nothing,
+
+		color            = raylib.ORANGE,
+		draw_size        = {0.125, 0.125},
+		draw_thing       = .draw_dot,
+	}
+	return ice_gun
+}
+easy_ice_ball :: proc(pos: [2]f32, dir: [2]f32) -> (ice_ball: Thing) {
+	ice_ball_speed: f32 : 70
+	ice_ball = {
+		pos              = pos,
+		velocity         = linalg.normalize0(dir) * ice_ball_speed,
+		drag_coefficient = 0.04, // streamlined body from wikipedia
+		flags            = {.freezing, .ignore_friction},
+		color            = raylib.Color{152, 132, 255, 255},
+		draw_size        = {0.125, 0.125},
+		draw_thing       = .draw_dot,
+		timer            = 0,
+		timer_length     = 0.5,
+		on_timeout       = .free_yourself,
+		on_contact       = .bounce,
+	}
+	return ice_ball
 }
 easy_stationary_camera :: proc(level: Level, pos: [2]f32, zoom: f32) -> (camera_thing: Thing) {
 	camera_thing = {
@@ -681,19 +721,19 @@ push_thing :: proc(thing_pool: ^ThingPool, thing: Thing) -> (idx: ThingIdx, succ
 		free_node: ^ThingNode = container_of(thing_pool.free_list.head, ThingNode, "link")
 		list.pop_front(&(thing_pool.free_list))
 		if free_node.thing.idx < thing_pool.offset {
-      generation: u32 = thing_pool.generations[free_node.thing.idx]
-      if free_node.thing.generation == generation {
-        free_thing = free_node.thing
-        is_free_thing = true
-        break
-      }
+			generation: u32 = thing_pool.generations[free_node.thing.idx]
+			if free_node.thing.generation == generation {
+				free_thing = free_node.thing
+				is_free_thing = true
+				break
+			}
 		}
 	}
 	if is_free_thing {
 		idx = free_thing
 		idx.generation += 1
 		thing_pool.generations[idx.idx] += 1
-    thing_pool.free[idx.idx] = false
+		thing_pool.free[idx.idx] = false
 		successful = set_thing(thing_pool, idx, thing)
 
 	} else {
@@ -713,7 +753,7 @@ push_thing :: proc(thing_pool: ^ThingPool, thing: Thing) -> (idx: ThingIdx, succ
 			generation = thing_pool.generations[thing_pool.offset],
 		}
 		thing_pool.offset += 1
-    thing_pool.free[idx.idx] = false
+		thing_pool.free[idx.idx] = false
 		successful = set_thing(thing_pool, idx, thing)
 	}
 	return idx, successful
@@ -778,6 +818,8 @@ Task :: enum {
 	do_gravity,
 	move,
 	move_with_camera,
+	move_with_target,
+	shoot,
 	freeze,
 	handle_click,
 }
@@ -808,7 +850,7 @@ tasks :: [Task]TaskProc {
 
 		if thing.timer_length > 0 && thing.timer >= 0 {
 			thing.timer += input.delta_time
-			if thing.timer > thing.timer_length {
+			if thing.timer >= thing.timer_length {
 				timeout_action := timeout_action
 				timeout_action[thing.on_timeout](
 					frame_arena,
@@ -819,8 +861,8 @@ tasks :: [Task]TaskProc {
 					idx,
 				)
 			}
+			set_thing(&(game.things), idx, thing)
 		}
-		set_thing(&(game.things), idx, thing)
 	},
 	.prepare_next_thing = proc(
 		frame_arena: ^virtual.Arena,
@@ -1044,6 +1086,8 @@ tasks :: [Task]TaskProc {
 					walls += hit
 				}
 				movement = pos - thing.pos
+				contact_actions := contact_actions
+				velocity = contact_actions[thing.on_contact](game.level, cell, velocity, walls)
 			}
 			thing.on_wall = walls
 			thing.pos = thing.pos + movement
@@ -1078,6 +1122,68 @@ tasks :: [Task]TaskProc {
 			delta_pos: [2]f32 = camera.pos - prev_camera.pos
 			thing.pos += delta_pos
 			set_thing(things, idx, thing)
+		}
+	},
+	.move_with_target = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
+		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
+		thing, success = get_thing(things, idx)
+		if !success {return}
+
+		if .moves_with_target in prev_thing.temp_flags {
+			prev_target, current_target := Thing{}, Thing{}
+			prev_target, success = get_thing(prev_things, prev_thing.target)
+			if !success {return}
+			current_target, success = get_thing(things, thing.target)
+			if !success {return}
+			delta_pos: [2]f32 = current_target.pos - prev_target.pos
+			thing.pos += delta_pos
+			if delta_pos != {} {
+				fmt.println(delta_pos)
+			}
+			set_thing(things, idx, thing)
+		}
+	},
+	.shoot = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
+		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
+		thing, success = get_thing(things, idx)
+		if !success {return}
+		if .shooting in prev_thing.temp_flags {
+			if thing.timer_length <= 0 || thing.timer > thing.timer_length || thing.timer < 0 {
+				fmt.println(thing.timer)
+				user, target: Thing = {}, {}
+				user, success = get_thing(prev_things, thing.target)
+				if !success {return}
+				target, success = get_thing(prev_things, user.target)
+				if !success {return}
+				if .shoots_ice in prev_thing.temp_flags {
+					ice_ball: Thing = easy_ice_ball(thing.pos, target.pos - thing.pos)
+					ice_ball_idx, success := push_thing(things, ice_ball)
+				}
+				thing.timer = 0
+				set_thing(things, idx, thing)
+			}
 		}
 	},
 	.freeze = proc(
@@ -1156,6 +1262,13 @@ click_actions :: [ClickAction]TaskProc {
 					thing.temp_flags -= {.moves_with_wasd}
 					thing.temp_flags += {.using_jetpack, .moves_towards_target}
 				}
+			case 1:
+				// ice_gun
+				ice_gun, success := get_thing(&(game.things), thing.inventory2)
+				if success {
+					ice_gun.temp_flags += {.shooting}
+					set_thing(&(game.things), thing.inventory2, ice_gun)
+				}
 			}
 		}
 		set_thing(&(game.things), idx, thing)
@@ -1190,10 +1303,18 @@ click_actions :: [ClickAction]TaskProc {
 							// no need to crash
 							// yet
 							if err == .None {
-								slicking: Thing = easy_slicking(game.level, thing.pos, idx)
-								slicking.zoom = 45.
-								slicking_idx, success := push_thing(&(game.things), slicking)
+								slicking_idx, success := push_thing(&(game.things), {})
 								if success {
+									slicking: Thing = easy_slicking(game.level, thing.pos, idx)
+									slicking.zoom = 45.
+									set_thing(&(game.things), slicking_idx, slicking)
+
+									ice_gun: Thing = easy_ice_gun(&(game.things), slicking_idx)
+									ice_gun_idx, succes := push_thing(&(game.things), ice_gun)
+									if success {
+										slicking.inventory2 = ice_gun_idx
+										set_thing(&(game.things), slicking_idx, slicking)
+									}
 									cam_node.thing = slicking_idx
 									list.push_front(&(game.cameras), &(cam_node.link))
 								}
@@ -1240,6 +1361,52 @@ timeout_action :: [TimeoutAction]TaskProc {
 		free_thing(frame_arena, &(game.things), idx)
 	},
 }
+WallContactAction :: enum {
+	slide,
+	stop,
+	bounce,
+}
+contact_actions :: [WallContactAction]proc(
+	level: Level,
+	cell: CellPos,
+	vel: [2]f32,
+	walls: Walls,
+) -> (
+	vel_out: [2]f32
+) {
+	.slide = proc(level: Level, cell: CellPos, vel: [2]f32, walls: Walls) -> (vel_out: [2]f32) {
+		vel_out = vel
+		return vel_out
+	},
+	.stop = proc(level: Level, cell: CellPos, vel: [2]f32, walls: Walls) -> (vel_out: [2]f32) {
+		vel_out = vel
+		if walls != {} {
+			vel_out = {}
+		}
+		return vel_out
+	},
+	.bounce = proc(level: Level, cell: CellPos, vel: [2]f32, walls: Walls) -> (vel_out: [2]f32) {
+		vel_out = vel
+		surface_normal: [2]f32 = {0, 0}
+		if .north in walls {
+			surface_normal += {0, 1}
+		}
+		if .east in walls {
+			surface_normal += {-1, 0}
+		}
+		if .south in walls {
+			surface_normal += {0, -1}
+		}
+		if .west in walls {
+			surface_normal += {1, 0}
+		}
+		surface_normal = linalg.normalize0(surface_normal)
+		if surface_normal != {0, 0} {
+			vel_out = vel - 2 * (linalg.vector_dot(surface_normal, vel)) * surface_normal
+		}
+		return vel_out
+	},
+}
 
 resolve_task :: proc(
 	frame_arena: ^virtual.Arena,
@@ -1277,8 +1444,10 @@ resolve_things :: proc(
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .do_gravity)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .move)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .move_with_camera)
+	resolve_task(frame_arena, prev_input, input, prev_game, game, .move_with_target)
 	// i will want to make sure all stuff that can change level goes down here
 	// spawn_dot_on_click needs a new name since it can change levels as well now
+	resolve_task(frame_arena, prev_input, input, prev_game, game, .shoot)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .freeze)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .handle_click)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .tick_timer)
@@ -1854,8 +2023,8 @@ main :: proc() {
 	setup_rendering()
 
 	prev_frame_arena, frame_arena: ^virtual.Arena = &frame1, &frame2
-	prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
-	//prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
+	//prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
+	prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
 	prev_game: ^GameState = &game1
 	game: ^GameState = &game2
 	tick(prev_frame_arena, frame_arena, prev_input, input, prev_game, game)
