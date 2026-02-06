@@ -17,6 +17,9 @@ STOP_ON_MISMATCHED_GENERATION_TAGS :: true
 STOP_ON_POOL_OVERFLOW :: false
 CHECK_EVERY_SAVE :: true
 
+// constants
+max_thing_count :: 3000
+
 // Globals //
 global_scratch_arena: virtual.Arena = {}
 get_scratch :: proc() -> virtual.Arena_Temp {
@@ -1419,6 +1422,30 @@ setup_rendering :: proc() {
 	for !raylib.IsWindowFullscreen() {}
 	raylib.DisableCursor()
 }
+setup_game_with_load :: proc(
+	arena: ^virtual.Arena,
+	first_frame_arena: ^virtual.Arena,
+) -> (
+	prev_input: InputState,
+	input_state: InputState,
+	game1: GameState,
+	game2: GameState,
+) {
+  prev_input, game1 = load_game(arena, first_frame_arena)
+  // setup next game
+	input_state = {}
+	level_err: runtime.Allocator_Error = .None
+	game2.level.size = game1.level.size
+	game2.level.data, level_err = virtual.make(
+		arena,
+		[]TileKind,
+		game2.level.size.x * game2.level.size.y,
+	)
+	assert(level_err == .None)
+	init_things(arena, &(game2.things), max_thing_count)
+
+	return prev_input, input_state, game1, game2
+}
 setup_game :: proc(
 	arena: ^virtual.Arena,
 	first_frame_arena: ^virtual.Arena,
@@ -1452,9 +1479,8 @@ setup_game :: proc(
 
 
 	// setup things
-	thing_count :: 3000
-	init_things(arena, &(game1.things), thing_count)
-	init_things(arena, &(game2.things), thing_count)
+	init_things(arena, &(game1.things), max_thing_count)
+	init_things(arena, &(game2.things), max_thing_count)
 
 	// world camera
 	world_cam: Thing = easy_stationary_camera(
@@ -1485,54 +1511,71 @@ setup_game :: proc(
 }
 
 // SERIALIZATION //
-serialize_game :: proc(prev_input: InputState, prev_game: ^GameState) {
+serialize_game :: proc(prev_input: InputState, prev_game: ^GameState) -> (successful: bool) {
 	scratch := get_scratch()
-
-	pos, velocity, running_strength, drag_coefficient, size, zoom, on_wall, target, frame_acceleration, flags, temp_flags, color, draw_size, draw_thing, on_click :=
-		soa_unzip(prev_game.things.thing)
-
+	// aos
+	aos_things, err := virtual.make(scratch.arena, []Thing, prev_game.things.offset)
+	if err != .None {
+		virtual.arena_temp_end(scratch)
+		return false
+	}
+	for i in 0 ..< prev_game.things.offset {
+		aos_things[i] = prev_game.things.thing[i]
+	}
+	// cameras
+	camera_count: u32 = 0
+	camera_iterator := list.iterator_head(prev_game.cameras, ThingNode, "link")
+	for camera in list.iterate_next(&camera_iterator) {
+		camera_count += 1
+	}
+	camera_slice: []ThingIdx
+	camera_slice, err = virtual.make(scratch.arena, []ThingIdx, camera_count)
+	if err != .None {
+		virtual.arena_temp_end(scratch)
+		return false
+	}
+	camera_iterator = list.iterator_head(prev_game.cameras, ThingNode, "link")
+	camera_index: i32 = 0
+	for camera in list.iterate_next(&camera_iterator) {
+		camera_slice[camera_index] = camera.thing
+		camera_index += 1
+	}
 
 	buffers: [][]byte = {
-			// Input //
-			slice.to_bytes([]InputState{prev_input}),
-			// Game //
-			slice.to_bytes([]i32{prev_game.hot_key}),
-			slice.to_bytes([]HotGroup{prev_game.hot_group}),
-			// level //
-			slice.to_bytes([][2]i32{prev_game.level.size}),
-			slice.to_bytes(prev_game.level.data),
-			// things //
-			// offset
-			slice.to_bytes([]u32{prev_game.things.offset}),
-			// generations
-			slice.to_bytes(prev_game.things.generations),
-			// free
-			slice.to_bytes(prev_game.things.free),
-			// thing
-      slice.to_bytes(pos[:prev_game.things.offset]),
-      slice.to_bytes(velocity[:prev_game.things.offset]),
-      slice.to_bytes(running_strength[:prev_game.things.offset]),
-      slice.to_bytes(drag_coefficient[:prev_game.things.offset]),
-      slice.to_bytes(size[:prev_game.things.offset]),
-      slice.to_bytes(zoom[:prev_game.things.offset]),
-      slice.to_bytes(on_wall[:prev_game.things.offset]),
-      slice.to_bytes(target[:prev_game.things.offset]),
-      slice.to_bytes(frame_acceleration[:prev_game.things.offset]),
-      slice.to_bytes(flags[:prev_game.things.offset]),
-      slice.to_bytes(temp_flags[:prev_game.things.offset]),
-      slice.to_bytes(color[:prev_game.things.offset]),
-      slice.to_bytes(draw_size[:prev_game.things.offset]),
-      slice.to_bytes(draw_thing[:prev_game.things.offset]),
-      slice.to_bytes(on_click[:prev_game.things.offset]),
-		}
-	big_buff, err := bytes.concatenate_safe(buffers[:], virtual.arena_allocator(scratch.arena))
+		// Input //
+		slice.to_bytes([]InputState{prev_input}),
+		// Game //
+		slice.to_bytes([]i32{prev_game.hot_key}),
+		slice.to_bytes([]HotGroup{prev_game.hot_group}),
+		// level //
+		slice.to_bytes([][2]i32{prev_game.level.size}),
+		slice.to_bytes(prev_game.level.data),
+		// things //
+		// offset
+		slice.to_bytes([]u32{prev_game.things.offset}),
+		// generations
+		slice.to_bytes(prev_game.things.generations[:prev_game.things.offset]),
+		// free
+		slice.to_bytes(prev_game.things.free[:prev_game.things.offset]),
+		// thing
+		slice.to_bytes(aos_things),
+		// cameras //
+		slice.to_bytes([]u32{camera_count}),
+		slice.to_bytes(camera_slice),
+	}
+	big_buff: []byte
+	big_buff, err = bytes.concatenate_safe(buffers[:], virtual.arena_allocator(scratch.arena))
+	if err != .None {
+		virtual.arena_temp_end(scratch)
+		return false
+	}
 	raylib.SaveFileData("seri", raw_data(big_buff), i32(len(big_buff)))
 
 	when CHECK_EVERY_SAVE {
 		// we don't need the old scratch for the check so we'll just empty it real quick
 		virtual.arena_temp_end(scratch)
 		scratch = get_scratch()
-		seri_input, seri_game := load_game(scratch.arena)
+		seri_input, seri_game := load_game(scratch.arena, scratch.arena)
 		assert(seri_input == prev_input)
 		assert(seri_game.hot_key == prev_game.hot_key)
 		assert(seri_game.hot_group == prev_game.hot_group)
@@ -1540,38 +1583,41 @@ serialize_game :: proc(prev_input: InputState, prev_game: ^GameState) {
 		for kind, i in prev_game.level.data {
 			assert(seri_game.level.data[i] == kind)
 		}
-    assert(seri_game.things.offset == prev_game.things.offset)
-    for i in 0..<prev_game.things.offset {
-      assert(seri_game.things.generations[i] == prev_game.things.generations[i])
-      assert(seri_game.things.free[i] == prev_game.things.free[i])
-      assert(seri_game.things.thing[i].pos == prev_game.things.thing[i].pos)
-      assert(seri_game.things.thing[i].velocity == prev_game.things.thing[i].velocity)
-      assert(seri_game.things.thing[i].running_strength == prev_game.things.thing[i].running_strength)
-      assert(seri_game.things.thing[i].drag_coefficient == prev_game.things.thing[i].drag_coefficient)
-      assert(seri_game.things.thing[i].size == prev_game.things.thing[i].size)
-      assert(seri_game.things.thing[i].zoom == prev_game.things.thing[i].zoom)
-      assert(seri_game.things.thing[i].on_wall == prev_game.things.thing[i].on_wall)
-      assert(seri_game.things.thing[i].target == prev_game.things.thing[i].target)
-      assert(seri_game.things.thing[i].frame_acceleration == prev_game.things.thing[i].frame_acceleration)
-      assert(seri_game.things.thing[i].flags == prev_game.things.thing[i].flags)
-      assert(seri_game.things.thing[i].temp_flags == prev_game.things.thing[i].temp_flags)
-      assert(seri_game.things.thing[i].color == prev_game.things.thing[i].color)
-      assert(seri_game.things.thing[i].draw_size == prev_game.things.thing[i].draw_size)
-      assert(seri_game.things.thing[i].draw_thing == prev_game.things.thing[i].draw_thing)
-      assert(seri_game.things.thing[i].on_click == prev_game.things.thing[i].on_click)
-    }
+		assert(seri_game.things.offset == prev_game.things.offset)
+		for i in 0 ..< prev_game.things.offset {
+			assert(prev_game.things.thing[i] == seri_game.things.thing[i])
+		}
+		camera_iterator = list.iterator_head(prev_game.cameras, ThingNode, "link")
+		seri_camera_iterator := list.iterator_head(seri_game.cameras, ThingNode, "link")
+		for camera in list.iterate_next(&camera_iterator) {
+			seri_camera, ok := list.iterate_next(&seri_camera_iterator)
+			assert(ok)
+			assert(camera.thing == seri_camera.thing)
+		}
 	}
 	// prev_game.level data is a problem
 	// prev_game.thing_pool is a problem
 	// cameras might require ptr arithmetic on load
 	virtual.arena_temp_end(scratch)
+	return true
 }
-load_game :: proc(arena: ^virtual.Arena) -> (seri_input: InputState, seri_game: GameState) {
+load_game :: proc(
+	arena: ^virtual.Arena,
+	frame_arena: ^virtual.Arena,
+) -> (
+	seri_input: InputState,
+	seri_game: GameState,
+) {
+	scratch: virtual.Arena_Temp = get_scratch()
 	data_size: i32 = 0
+	// (TODO) use io stream or something instead so i can use scratch arena instead of context allocator
 	seri_data: [^]byte = raylib.LoadFileData("seri", &data_size)
 	seri_bytes: []byte = seri_data[:data_size]
 
-	offset: i32 = 0
+	init_things(arena, &(seri_game.things), max_thing_count)
+
+
+	offset: u32 = 0
 
 	seri_input = slice.reinterpret([]InputState, seri_bytes[offset:size_of(InputState)])[0]
 	offset += size_of(InputState)
@@ -1587,16 +1633,56 @@ load_game :: proc(arena: ^virtual.Arena) -> (seri_input: InputState, seri_game: 
 		slice.reinterpret([][2]i32, seri_bytes[offset:offset + size_of([2]f32)])[0]
 	offset += size_of([2]f32)
 
-	level_count: i32 = seri_game.level.size.x * seri_game.level.size.y
-	seri_game.level.data = slice.reinterpret(
+	level_count: u32 = u32(seri_game.level.size.x * seri_game.level.size.y)
+	level_data_slice: []TileKind = slice.reinterpret(
 		[]TileKind,
 		seri_bytes[offset:offset + size_of(TileKind) * level_count],
 	)
-  offset += size_of(TileKind) * level_count
+	seri_game.level.data = slice.clone(level_data_slice, virtual.arena_allocator(arena))
+	offset += size_of(TileKind) * level_count
 
-  seri_game.things.offset = slice.reinterpret([]u32, seri_bytes[offset:offset + size_of(u32)])[0]
-  
+	seri_game.things.offset = slice.reinterpret([]u32, seri_bytes[offset:offset + size_of(u32)])[0]
+	offset += size_of(u32)
 
+	seri_generations: []u32 = slice.reinterpret(
+		[]u32,
+		seri_bytes[offset:offset + size_of(u32) * seri_game.things.offset],
+	)
+	offset += size_of(u32) * seri_game.things.offset
+
+	seri_free: []bool = slice.reinterpret(
+		[]bool,
+		seri_bytes[offset:offset + size_of(bool) * seri_game.things.offset],
+	)
+	offset += size_of(bool) * seri_game.things.offset
+
+	seri_things: []Thing = slice.reinterpret(
+		[]Thing,
+		seri_bytes[offset:offset + size_of(Thing) * seri_game.things.offset],
+	)
+	offset += size_of(Thing) * seri_game.things.offset
+
+	for i in 0 ..< seri_game.things.offset {
+		seri_game.things.generations[i] = seri_generations[i]
+		seri_game.things.free[i] = seri_free[i]
+		seri_game.things.thing[i] = seri_things[i]
+	}
+
+	seri_camera_count: u32 = slice.reinterpret([]u32, seri_bytes[offset:offset + size_of(u32)])[0]
+	offset += size_of(i32)
+	seri_cameras: []ThingIdx = slice.reinterpret(
+		[]ThingIdx,
+		seri_bytes[offset:offset + size_of(ThingIdx) * seri_camera_count],
+	)
+	offset += size_of(ThingIdx) * seri_camera_count
+
+	for camera in seri_cameras {
+		camera_node, err := virtual.new(frame_arena, ThingNode)
+		camera_node.thing = camera
+		list.push_back(&(seri_game.cameras), &(camera_node.link))
+	}
+
+	raylib.UnloadFileData(seri_data)
 	return seri_input, seri_game
 }
 
@@ -1623,7 +1709,7 @@ main :: proc() {
 	setup_rendering()
 
 	prev_frame_arena, frame_arena: ^virtual.Arena = &frame1, &frame2
-	prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
+	prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
 	prev_game: ^GameState = &game1
 	game: ^GameState = &game2
 	tick(prev_frame_arena, frame_arena, prev_input, input, prev_game, game)
