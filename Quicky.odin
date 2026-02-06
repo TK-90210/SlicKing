@@ -1142,7 +1142,7 @@ GameButtons :: bit_set[GameButton]
 InputState :: struct {
 	// must be smol
 	delta_time:      f32, // 4 bytes
-	mouse_delta:     [2]f32, // 8 bytes
+	mouse_delta:     [2]f32, // 8 bytes, prev_game)
 	pressed_buttons: GameButtons,
 	random:          u32,
 }
@@ -1190,6 +1190,7 @@ get_input_state :: proc() -> InputState {
 	if raylib.IsKeyDown(raylib.KeyboardKey.D) {pressed_buttons += {.D}}
 	if raylib.IsKeyDown(raylib.KeyboardKey.TAB) {pressed_buttons += {.tab}}
 	if raylib.IsKeyDown(raylib.KeyboardKey.LEFT_CONTROL) {pressed_buttons += {.ctrl}}
+	if raylib.IsKeyDown(raylib.KeyboardKey.RIGHT_CONTROL) {pressed_buttons += {.ctrl}}
 	return {
 		1. / 60.,
 		//raylib.GetFrameTime(),
@@ -1827,6 +1828,6 @@ main :: proc() {
 		next_game = prev_prev_game
     */
 	}
-  serialize_game(prev_input, prev_game)
+  //serialize_game(prev_input, prev_game)
 	raylib.CloseWindow()
 }
