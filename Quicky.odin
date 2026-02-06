@@ -238,6 +238,7 @@ TileKind :: enum u8 {
 	outside,
 }
 SetOfTiles :: bit_set[TileKind]
+Every_Tile: SetOfTiles : {.snow, .dirt, .ice, .water, .wall, .outside}
 easy_tiles :: [TileKind]Tile {
 	.dirt = {color = raylib.BROWN, solid = false, friction = 3.0},
 	.snow = {color = raylib.RAYWHITE, solid = false, friction = 1.0},
@@ -320,6 +321,63 @@ set_tile :: proc {
 	set_tile_pos,
 }
 
+paint_line :: proc(level: Level, start: [2]f32, end: [2]f32, paint_mask: SetOfTiles, paint: TileKind) {
+  velocity: [2]f32 = end - start
+	mag: f32 = linalg.length(velocity)
+	//re: = { x: cos(rdAngle) * mag + ro.x, y: sin(rdAngle) * mag + ro.y}
+	dir: [2]f32 = linalg.normalize(velocity)
+	step: [2]i32 = linalg.to_i32(linalg.sign(dir))
+
+	cell: [2]i32 = linalg.to_i32(start)
+
+	rayUnitStepSize: [2]f32 = {
+		linalg.sqrt(1 + (dir.y / dir.x) * (dir.y / dir.x)),
+		linalg.sqrt(1 + (dir.x / dir.y) * (dir.x / dir.y)),
+	}
+
+	rayLength: [2]f32 = {0, 0}
+	fract: [2]f32 = start - linalg.to_f32(cell)
+	if (dir.x < 0) {
+		rayLength.x = fract.x * rayUnitStepSize.x
+	} else {
+		rayLength.x = (1 - fract.x) * rayUnitStepSize.x
+	}
+
+	if (dir.y < 0) {
+		rayLength.y = fract.y * rayUnitStepSize.y
+	} else {
+		rayLength.y = (1 - fract.y) * rayUnitStepSize.y
+	}
+
+	possible_walls: [2]Wall = {.west if step.x < 0 else .east, .north if step.y < 0 else .south}
+	len: f32 = rayLength.y
+	possible_hit: Walls = {possible_walls.y}
+	if rayLength.x < rayLength.y {
+		len = rayLength.x
+		possible_hit = {possible_walls.x}
+	}
+	len = min(len, mag)
+	prev_len: f32 = 0
+	for ; len < mag; len = min(rayLength.x, rayLength.y) {
+		if tile, kind := get_tile(level, cell); kind in paint_mask {
+      set_tile(level, cell, paint)
+		}
+
+		if (rayLength.x < rayLength.y) {
+			cell.x += step.x
+			rayLength.x += rayUnitStepSize.x
+			prev_len = len
+			possible_hit = {possible_walls.x}
+
+		} else {
+			cell.y += step.y
+			rayLength.y += rayUnitStepSize.y
+			prev_len = len
+			possible_hit = {possible_walls.y}
+		}
+	}
+}
+
 draw_level :: proc(things: ^ThingPool, level: Level, current_cam: ThingIdx) {
 	for idx in 0 ..< len(level.data) {
 		pos, in_bouds := pos_from_idx(level, i64(idx))
@@ -331,8 +389,6 @@ draw_level :: proc(things: ^ThingPool, level: Level, current_cam: ThingIdx) {
 		raylib.DrawRectangleRec(screenspace_rect, tile.color)
 	}
 }
-
-//move_in_level(start: [2]f32, velocity: [2]f32, collision_mask: TileKind) -> 
 
 // camera //
 Camera :: struct {
@@ -403,6 +459,7 @@ ThingFlags :: bit_set[enum {
 	ignore_level,
 	ignore_friction,
 }]
+// THING //
 Thing :: struct {
 	pos:                [2]f32, // 8 bytes
 	velocity:           [2]f32, // 8 bytes
@@ -427,12 +484,11 @@ nil_thing :: proc() -> Thing {
 	thing: Thing = {}
 	return thing
 }
-// EASY THINGS //
+// EASY PRESETS //
 easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 	thing: Thing = {
 		pos              = start, // pos
 		velocity         = velocity, // velocity
-		//calc_point_corners(level, start), // on_corners
 		running_strength = 1, // running_strength
 		drag_coefficient = 1.17, // drag_coefficient https://en.wikipedia.org/wiki/Drag_coefficient
 		size             = 0, // size of a point is 0
@@ -443,11 +499,7 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 		color            = raylib.BLUE,
 		draw_size        = {0.5, 0.5},
 		draw_thing       = .draw_dot, // draw_thing
-		//.do_nothing, // on_click
 	}
-	//if thing.on_corners == walls[.problem_brtl] || thing.on_corners == walls[.problem_bltr] {
-	//thing.on_corners += walls[.down]
-	//}
 
 	return thing
 }
@@ -709,15 +761,6 @@ tasks :: [Task]TaskProc {
 			acceleration: f32 =
 				thing.running_strength * friction if .using_jetpack not_in prev_thing.temp_flags else jetpack_strength
 			thing.frame_acceleration += acceleration * dir
-			/*
-			drag_vector: [2]f32 =
-				linalg.normalize0(thing.velocity) *
-				drag_force(
-					flow_velocity = -thing.velocity,
-					drag_coefficient = thing.drag_coefficient,
-				)
-    */
-			//new_thing.velocity = thing.velocity + delta_vel - drag_vector
 			set_thing(&(game.things), idx, thing)
 		}
 	},
@@ -792,14 +835,6 @@ tasks :: [Task]TaskProc {
 					)
 			}
 			thing.frame_acceleration += delta_vel
-
-			//drag_vector: [2]f32 =
-			//linalg.normalize0(thing.velocity) *
-			//drag_force(
-			//flow_velocity = -thing.velocity,
-			//drag_coefficient = thing.drag_coefficient,
-			//)
-			//thing.velocity = thing.velocity - drag_vector
 
 			set_thing(things, idx, thing)
 		}
@@ -1031,12 +1066,17 @@ click_actions :: [ClickAction]TaskProc {
 		game: ^GameState,
 		idx: ThingIdx,
 	) {
-		thing, success := get_thing(&(game.things), idx)
+		prev_thing, thing: Thing = {}, {}
+		success: bool = false
+		prev_thing, success = get_thing(&(prev_game.things), idx)
+		if !success {return}
+		thing, success = get_thing(&(game.things), idx)
 		if !success {return}
 		switch game.hot_group {
 		case .edit_tiles:
 			kind: TileKind = TileKind(linalg.min(i32(TileKind.outside) - 1, game.hot_key))
-			set_tile(game.level, linalg.to_i32(thing.pos), kind)
+      paint_line(game.level, prev_thing.pos, thing.pos, Every_Tile, kind)
+			//set_tile(game.level, linalg.to_i32(thing.pos), kind)
 		case .edit_things:
 			if game.hot_key < 2 {
 				if tile, _ := get_tile(game.level, linalg.to_i32(thing.pos)); !tile.solid {
@@ -1307,84 +1347,6 @@ tick :: proc(
 	resolve_things(frame_arena, prev_input, input, prev_game, game)
 
 }
-/*
-tick :: proc(
-	frame_arena: ^virtual.Arena,
-	next_frame_arena: ^virtual.Arena,
-	prev_game: ^GameState,
-	game: ^GameState,
-	next_game: ^GameState,
-	prev_input: InputState,
-	input: InputState,
-) {
-	assert(!list.is_empty(&game.cameras))
-
-	game.hot_group = prev_game.hot_group
-	if .tab not_in input.pressed_buttons && .tab in prev_input.pressed_buttons {
-		game.hot_group = HotGroup((i32(next_game.hot_group) + 1) % 3) // (TODO) make this better (i don't want to increase 3 every tine i ad a hotgroup
-	}
-	game.hot_key = prev_game.hot_key
-	if .one in input.pressed_buttons {
-		game.hot_key = 0
-	}
-	if .two in input.pressed_buttons {
-		game.hot_key = 1
-	}
-	if .three in input.pressed_buttons {
-		game.hot_key = 2
-	}
-	if .four in input.pressed_buttons {
-		game.hot_key = 3
-	}
-	if .five in input.pressed_buttons {
-		game.hot_key = 4
-	}
-	if .right_mouse in input.pressed_buttons && .right_mouse not_in prev_input.pressed_buttons {
-		// cycle cameras if there is more than one
-		if game.cameras.head.next != {} {
-			game.cameras.head.prev = game.cameras.tail
-			game.cameras.tail.next = game.cameras.head
-			game.cameras.head = game.cameras.head.next
-			game.cameras.tail = game.cameras.tail.next
-			game.cameras.head.prev = {}
-			game.cameras.tail.next = {}
-		}
-	}
-	resolve_things(frame_arena, prev_game, game, next_game, prev_input, input)
-
-
-	next_game.cameras.head = {}
-	next_game.cameras.tail = {}
-	iterator := list.iterator_head(game.cameras, ThingNode, "link")
-	// populate new list with valid nodes from previous list
-	for camera_node in list.iterate_next(&iterator) {
-		if check_idx(&(game.things), camera_node.thing) {
-			copy_node, err := virtual.new(next_frame_arena, ThingNode)
-			assert(err == .None)
-			copy_node.thing = camera_node.thing
-			list.push_back(&(next_game.cameras), &(copy_node.link))
-		}
-	}
-	if list.is_empty(&(next_game.cameras)) {
-		world_cam: Thing = easy_stationary_camera(
-			next_game.level,
-			level_center(next_game.level),
-			min(
-				f32(raylib.GetRenderWidth()) / f32(next_game.level.size.x),
-				f32(raylib.GetRenderHeight()) / f32(next_game.level.size.y),
-			) *
-			0.9,
-		)
-		world_cam_idx, _ := push_thing(&(next_game.things), world_cam)
-		camera_node, err := virtual.new(next_frame_arena, ThingNode)
-		assert(err == .None)
-		camera_node.thing = world_cam_idx
-		list.push_back(&(next_game.cameras), &(camera_node.link))
-	}
-
-	virtual.arena_static_reset_to(frame_arena, 0)
-}
-*/
 // drawing
 DrawProc :: proc(things: ^ThingPool, thing: Thing, camera: ThingIdx)
 Draw :: enum {
@@ -1715,15 +1677,6 @@ main :: proc() {
 	game: ^GameState = &game2
 	tick(prev_frame_arena, frame_arena, prev_input, input, prev_game, game)
 
-	/*
-  for !raylib.IsKeyDown(raylib.KeyboardKey.SPACE) {
-		raylib.BeginDrawing()
-		raylib.ClearBackground(raylib.LIGHTGRAY)
-		raylib.DrawFPS(raylib.GetRenderWidth() - 100, 50)
-		draw_game(game)
-		raylib.EndDrawing()
-	}*/
-
 	// game stuff
 	for !raylib.WindowShouldClose() {
 		// game loop
@@ -1813,20 +1766,6 @@ main :: proc() {
 		)
 		raylib.EndDrawing()
 
-		/*
-		input_state = get_input_state()
-		tick(frame_arena, next_frame_arena, &prev_game, &game, &next_game, prev_input, input_state)
-		prev_frame_arena := frame_arena
-		frame_arena = next_frame_arena
-		next_frame_arena = prev_frame_arena
-		// (TODO) makes these pointers so juggling is faster
-		prev_input = input_state
-
-		prev_prev_game: GameState = prev_game
-		prev_game = game
-		game = next_game
-		next_game = prev_prev_game
-    */
 	}
   //serialize_game(prev_input, prev_game)
 	raylib.CloseWindow()
