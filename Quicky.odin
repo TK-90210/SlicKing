@@ -313,20 +313,20 @@ get_tile :: proc {
 	get_tile_idx,
 	get_tile_pos,
 }
-set_tile_idx :: proc(level: Level, idx: CellIdx, kind: TileKind) {
+queue_tile_change_idx :: proc(level: Level, idx: CellIdx, kind: TileKind) {
 	if 0 <= idx && idx < i64(len(level.data)) {
 		level.data[idx] = kind
 	}
 }
-set_tile_pos :: proc(level: Level, pos: CellPos, kind: TileKind) {
+queue_tile_change_pos :: proc(level: Level, pos: CellPos, kind: TileKind) {
 	idx, bounds := idx_from_pos(level, pos)
 	if bounds {
 		level.data[idx] = kind
 	}
 }
-set_tile :: proc {
-	set_tile_idx,
-	set_tile_pos,
+queue_tile_change :: proc {
+	queue_tile_change_idx,
+	queue_tile_change_pos,
 }
 
 paint_line :: proc(
@@ -374,7 +374,7 @@ paint_line :: proc(
 	prev_len: f32 = 0
 	for ; len < mag; len = min(rayLength.x, rayLength.y) {
 		if tile, kind := get_tile(level, cell); kind in paint_mask {
-			set_tile(level, cell, paint)
+			queue_tile_change(level, cell, paint)
 		}
 
 		if (rayLength.x < rayLength.y) {
@@ -393,14 +393,31 @@ paint_line :: proc(
 }
 
 draw_level :: proc(things: ^ThingPool, level: Level, current_cam: ThingIdx) {
-	for idx in 0 ..< len(level.data) {
-		pos, in_bouds := pos_from_idx(level, i64(idx))
-		pos32: [2]f32 = linalg.to_f32(pos)
-		tile, kind := get_tile(level, pos)
-		rect: raylib.Rectangle = raylib.Rectangle{pos32.x, pos32.y, 1., 1.}
+	min_cell: CellPos = linalg.to_i32(screen_to_world(things, {0, 0}, current_cam)) - [2]i32{1, 1}
+	min_cell.x = max(min_cell.x, 0)
+	min_cell.y = max(min_cell.y, 0)
+	max_cell: CellPos =
+		linalg.to_i32(
+			screen_to_world(
+				things,
+				[2]f32{f32(raylib.GetRenderWidth()), f32(raylib.GetRenderHeight())},
+				current_cam,
+			),
+		) +
+		[2]i32{2, 2}
+	max_cell.x = min(max_cell.x, level.size.x)
+	max_cell.y = min(max_cell.y, level.size.y)
+  fmt.println(min_cell, max_cell)
+	for y in min_cell.y ..< max_cell.y {
+		for x in min_cell.x ..< max_cell.x {
+			pos: CellPos = {x, y}
+			pos32: [2]f32 = linalg.to_f32(pos)
+			tile, kind := get_tile(level, pos)
+			rect: raylib.Rectangle = raylib.Rectangle{pos32.x, pos32.y, 1., 1.}
 
-		screenspace_rect: raylib.Rectangle = world_to_screenspace(things, rect, current_cam)
-		raylib.DrawRectangleRec(screenspace_rect, tile.color)
+			screenspace_rect: raylib.Rectangle = world_to_screenspace(things, rect, current_cam)
+			raylib.DrawRectangleRec(screenspace_rect, tile.color)
+		}
 	}
 }
 
@@ -417,6 +434,21 @@ get_camera_pos :: proc(things: ^ThingPool, camera_idx: ThingIdx) -> [2]f32 {
 	} else {
 		return {}
 	}
+}
+screen_to_world :: proc(
+	things: ^ThingPool,
+	pos: [2]f32,
+	camera_idx: ThingIdx,
+) -> (
+	world_pos: [2]f32,
+) {
+	camera, successful := get_thing(things, camera_idx)
+	if successful {
+		screen_center: [2]f32 =
+			linalg.to_f32([2]i32{raylib.GetRenderWidth(), raylib.GetRenderHeight()}) * 0.5
+		world_pos = (pos - screen_center) / camera.zoom + camera.pos
+	}
+	return world_pos
 }
 world_to_screenspace_vec2 :: proc(
 	things: ^ThingPool,
@@ -567,10 +599,9 @@ easy_ice_gun :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (ice_gun: Th
 		timer_length = fire_rate,
 		timer        = -1,
 		on_timeout   = .do_nothing,
-
-		color            = raylib.ORANGE,
-		draw_size        = {0.125, 0.125},
-		draw_thing       = .draw_dot,
+		color        = raylib.ORANGE,
+		draw_size    = {0.125, 0.125},
+		draw_thing   = .draw_dot,
 	}
 	return ice_gun
 }
@@ -601,6 +632,7 @@ easy_stationary_camera :: proc(level: Level, pos: [2]f32, zoom: f32) -> (camera_
 }
 easy_mouse :: proc(level: Level) -> (mouse_thing: Thing) {
 	mouse_thing = {
+    zoom = 20,
 		pos              = level_center(level), // position
 		velocity         = {0, 0}, // velocity
 		running_strength = 0, // running_strength
@@ -1148,9 +1180,6 @@ tasks :: [Task]TaskProc {
 			if !success {return}
 			delta_pos: [2]f32 = current_target.pos - prev_target.pos
 			thing.pos += delta_pos
-			if delta_pos != {} {
-				fmt.println(delta_pos)
-			}
 			set_thing(things, idx, thing)
 		}
 	},
@@ -1171,7 +1200,6 @@ tasks :: [Task]TaskProc {
 		if !success {return}
 		if .shooting in prev_thing.temp_flags {
 			if thing.timer_length <= 0 || thing.timer > thing.timer_length || thing.timer < 0 {
-				fmt.println(thing.timer)
 				user, target: Thing = {}, {}
 				user, success = get_thing(prev_things, thing.target)
 				if !success {return}
@@ -1291,7 +1319,7 @@ click_actions :: [ClickAction]TaskProc {
 		case .edit_tiles:
 			kind: TileKind = TileKind(linalg.min(i32(TileKind.outside) - 1, game.hot_key))
 			paint_line(game.level, prev_thing.pos, thing.pos, Every_Tile, kind)
-		//set_tile(game.level, linalg.to_i32(thing.pos), kind)
+		//queue_tile_change(game.level, linalg.to_i32(thing.pos), kind)
 		case .edit_things:
 			if game.hot_key < 2 {
 				if tile, _ := get_tile(game.level, linalg.to_i32(thing.pos)); !tile.solid {
@@ -1730,7 +1758,7 @@ setup_game :: proc(
 	input_state = {}
 	// setup level
 	level_err: runtime.Allocator_Error = .None
-	level_size: [2]i32 = {200, 110}
+	level_size: [2]i32 = {500, 500}
 	game1.level.size = level_size
 	game1.level.data, level_err = virtual.make(
 		arena,
@@ -1769,7 +1797,6 @@ setup_game :: proc(
 	list.push_back(&(game1.cameras), &(world_cam_node.link))
 	// mouse
 	mouse_thing: Thing = easy_mouse(game1.level)
-	mouse_thing.zoom = world_cam.zoom * 2
 	mouse_idx, successful := push_thing(&(game1.things), mouse_thing)
 	mouse_node: ^ThingNode = {}
 	mouse_node, err = virtual.new(first_frame_arena, ThingNode)
@@ -2006,25 +2033,25 @@ main :: proc() {
 	//crash: ^virtual.Arena
 	lifelong: virtual.Arena = {}
 	err: runtime.Allocator_Error = {}
-	err = virtual.arena_init_static(&lifelong, 1 * mem.Megabyte)
+	err = virtual.arena_init_static(&lifelong, 2 * mem.Megabyte)
 	assert(err == .None)
 	scratch: virtual.Arena = {}
-	err = virtual.arena_init_static(&scratch, 1 * mem.Megabyte)
+	err = virtual.arena_init_static(&scratch, 2 * mem.Megabyte)
 	global_scratch_arena = scratch
 	assert(err == .None)
 	frame1: virtual.Arena = {}
-	err = virtual.arena_init_static(&frame1, 1 * mem.Megabyte)
+	err = virtual.arena_init_static(&frame1, 2 * mem.Megabyte)
 	assert(err == .None)
 	frame2: virtual.Arena = {}
-	err = virtual.arena_init_static(&frame2, 1 * mem.Megabyte)
+	err = virtual.arena_init_static(&frame2, 2 * mem.Megabyte)
 	assert(err == .None)
 
 
 	setup_rendering()
 
 	prev_frame_arena, frame_arena: ^virtual.Arena = &frame1, &frame2
-	//prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
-	prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
+	prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
+	//prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
 	prev_game: ^GameState = &game1
 	game: ^GameState = &game2
 	tick(prev_frame_arena, frame_arena, prev_input, input, prev_game, game)
@@ -2049,7 +2076,6 @@ main :: proc() {
 		// rendering (TODO) section this off into a different loop
 		raylib.BeginDrawing()
 		raylib.ClearBackground(raylib.LIGHTGRAY)
-		raylib.DrawFPS(raylib.GetRenderWidth() - 100, 50)
 		raylib.DrawText(
 			fmt.caprint(game.things.offset),
 			i32(raylib.GetRenderWidth() / 2),
@@ -2116,6 +2142,7 @@ main :: proc() {
 			16,
 			raylib.BLACK,
 		)
+		raylib.DrawFPS(raylib.GetRenderWidth() - 100, 50)
 		raylib.EndDrawing()
 
 	}
