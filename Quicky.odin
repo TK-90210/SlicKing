@@ -1827,5 +1827,6 @@ main :: proc() {
 		next_game = prev_prev_game
     */
 	}
+  serialize_game(prev_input, prev_game)
 	raylib.CloseWindow()
 }
