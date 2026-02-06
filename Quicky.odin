@@ -13,7 +13,7 @@ import "core:sys/orca"
 import "vendor:raylib"
 
 // compiler flags //
-STOP_ON_MISMATCHED_GENERATION_TAGS :: true
+STOP_ON_MISMATCHED_GENERATION_TAGS :: false
 STOP_ON_POOL_OVERFLOW :: false
 CHECK_EVERY_SAVE :: true
 
@@ -478,7 +478,12 @@ Thing :: struct {
 	color:              raylib.Color,
 	draw_size:          [2]f32,
 	draw_thing:         Draw,
+  // on click
 	on_click:           ClickAction, // is not a task, it just needs the same signature
+  // timers
+  timer_length:       f32,
+  timer:              f32,
+  on_timeout:         TimeoutAction,
 }
 nil_thing :: proc() -> Thing {
 	thing: Thing = {}
@@ -499,6 +504,9 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 		color            = raylib.BLUE,
 		draw_size        = {0.5, 0.5},
 		draw_thing       = .draw_dot, // draw_thing
+    timer = 0,
+    timer_length = 5,
+    on_timeout = .free_yourself
 	}
 
 	return thing
@@ -613,6 +621,7 @@ set_thing :: proc(
 	}
 	return successful
 }
+/*
 push_things :: proc(
 	arena: ^virtual.Arena,
 	thing_pool: ^ThingPool,
@@ -647,16 +656,31 @@ push_things :: proc(
 	}
 	return idxs, successful
 }
+*/
 push_thing :: proc(thing_pool: ^ThingPool, thing: Thing) -> (idx: ThingIdx, successful: bool) {
-	scratch: virtual.Arena_Temp = get_scratch()
-	things_arr: [1]Thing = {thing}
-	thing_slice: []Thing = things_arr[:]
-	idxs: []ThingIdx = {}
-	idxs, successful = push_things(scratch.arena, thing_pool, thing_slice)
-	idx = idxs[0]
-
-	virtual.arena_temp_end(scratch)
+  successful = thing_pool.offset + 1 < u32(len(thing_pool.thing))
+	when STOP_ON_POOL_OVERFLOW {
+		if !successful {
+			panic("pool is out of memory")
+		}
+	} else {
+		if !successful {
+			return {}, successful
+		}
+	}
+  thing_pool.generations[thing_pool.offset] += 1
+  idx = {
+    idx = thing_pool.offset,
+    generation = thing_pool.generations[thing_pool.offset]
+  }
+  thing_pool.offset += 1
+  successful = set_thing(thing_pool, idx, thing)
 	return idx, successful
+}
+free_thing :: proc(thing_pool: ^ThingPool, idx: ThingIdx) {
+  if check_idx(thing_pool, idx) {
+    thing_pool.free[idx.idx] = true
+  }
 }
 
 draw_things :: proc(thing_pool: ^ThingPool, camera_idx: ThingIdx) {
@@ -666,7 +690,7 @@ draw_things :: proc(thing_pool: ^ThingPool, camera_idx: ThingIdx) {
 			generation = thing_pool.generations[i],
 		}
 		thing, successful := get_thing(thing_pool, idx)
-		assert(successful)
+    if !successful {continue}
 		drawing := drawing
 		drawing[thing.draw_thing](thing_pool, thing, camera_idx)
 		if i == thing_pool.offset - 1 {
@@ -699,6 +723,7 @@ TaskProc :: proc(
 )
 Task :: enum {
 	do_nothing,
+  tick_timer,
 	prepare_next_thing,
 	move_towards_target,
 	move_with_mouse,
@@ -719,6 +744,30 @@ tasks :: [Task]TaskProc {
 		idx: ThingIdx,
 	) {
 	},
+  .tick_timer = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {
+		prev_thing, thing: Thing = {}, {}
+		success: bool = false
+		prev_thing, success = get_thing(&(prev_game.things), idx)
+		if !success {return}
+		thing, success = get_thing(&(game.things), idx)
+		if !success {return}
+
+    if thing.timer_length > 0 && thing.timer >= 0 {
+      thing.timer += input.delta_time
+      if thing.timer > thing.timer_length {
+        timeout_action := timeout_action
+        timeout_action[thing.on_timeout](frame_arena, prev_input, input, prev_game, game, idx)
+      }
+    }
+    set_thing(&(game.things), idx, thing)
+  },
 	.prepare_next_thing = proc(
 		frame_arena: ^virtual.Arena,
 		prev_input: InputState,
@@ -994,9 +1043,7 @@ tasks :: [Task]TaskProc {
 		if !success {return}
 
 		if .freezing in prev_thing.temp_flags {
-			if tile, kind := get_tile(game.level, linalg.to_i32(thing.pos)); kind == .water {
-				set_tile(game.level, linalg.to_i32(thing.pos), .ice)
-			}
+      paint_line(game.level, prev_thing.pos, thing.pos, {.water}, .ice)
 		}
 	},
 	.handle_click = proc(
@@ -1114,6 +1161,30 @@ click_actions :: [ClickAction]TaskProc {
 		}
 	},
 }
+TimeoutAction :: enum {
+	do_nothing,
+  free_yourself,
+}
+timeout_action :: [TimeoutAction]TaskProc {
+	.do_nothing = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {},
+  .free_yourself = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {
+    free_thing(&(game.things), idx)
+  },
+}
 
 resolve_task :: proc(
 	frame_arena: ^virtual.Arena,
@@ -1155,6 +1226,7 @@ resolve_things :: proc(
 	// spawn_dot_on_click needs a new name since it can change levels as well now
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .freeze)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .handle_click)
+	resolve_task(frame_arena, prev_input, input, prev_game, game, .tick_timer)
 }
 // movement helpers //
 
@@ -1574,7 +1646,7 @@ load_game :: proc(
 	scratch: virtual.Arena_Temp = get_scratch()
 	data_size: i32 = 0
 	// (TODO) use io stream or something instead so i can use scratch arena instead of context allocator
-	seri_data: [^]byte = raylib.LoadFileData("seri", &data_size)
+	seri_data: [^]byte = raylib.LoadFileData(fmt.caprintf("%sseri", #directory), &data_size)
 	seri_bytes: []byte = seri_data[:data_size]
 
 	init_things(arena, &(seri_game.things), max_thing_count)
@@ -1673,6 +1745,7 @@ main :: proc() {
 
 	prev_frame_arena, frame_arena: ^virtual.Arena = &frame1, &frame2
 	prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
+	//prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
 	prev_game: ^GameState = &game1
 	game: ^GameState = &game2
 	tick(prev_frame_arena, frame_arena, prev_input, input, prev_game, game)
