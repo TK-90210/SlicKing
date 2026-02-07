@@ -522,6 +522,7 @@ ThingFlags :: bit_set[enum {
 	using_jetpack,
 	camera,
 	moves_towards_target,
+	moves_towards_destination,
 	moves_with_target,
 	moves_with_mouse,
 	moves_with_camera,
@@ -532,7 +533,7 @@ ThingFlags :: bit_set[enum {
 	ignore_friction,
 	shoots_ice,
 	shoots_bullets,
-  shoots_fire,
+	shoots_fire,
 	shooting,
 	friend,
 	foe,
@@ -574,6 +575,10 @@ Thing :: struct {
 	// on contact
 	on_contact:         WallContactAction,
 	sight_range:        f32,
+
+	// patrol stuff
+	patrol_point:       ThingIdx,
+	destination:        ThingIdx,
 }
 nil_thing :: proc() -> Thing {
 	thing: Thing = {}
@@ -603,6 +608,48 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 	}
 
 	return thing
+}
+easy_patrol_point :: proc(pos: [2]f32) -> (patrol_point: Thing) {
+	patrol_point = {
+		pos        = pos,
+		color      = raylib.GREEN,
+		draw_size  = {0.125, 0.125},
+		draw_thing = .draw_patrol_point,
+	}
+	return patrol_point
+}
+easy_rat :: proc(start_pos: [2]f32, things: ^ThingPool) -> (rat: Thing) {
+	closest_patrol_point: ThingIdx = {}
+	closest_dist: f32 = 30
+	for i in 0 ..< things.offset {
+		if things.free[i] {continue}
+		other_idx: ThingIdx = {
+			idx        = i,
+			generation = things.generations[i],
+		}
+		other_thing, _ := get_thing(things, other_idx)
+		if check_idx(things, other_thing.patrol_point) {
+			dist: f32 = linalg.length(other_thing.pos - start_pos)
+			if dist < closest_dist {
+				closest_dist = dist
+				closest_patrol_point = other_idx
+			}
+		}
+	}
+	rat = {
+		pos              = start_pos,
+		draw_size        = 0.5,
+		color            = raylib.GRAY,
+		draw_thing       = .draw_dot,
+		running_strength = 2,
+		drag_coefficient = 1.7,
+		health           = 100,
+		max_health       = 100,
+		hurt_size        = 0.52,
+		flags            = {.foe, .moves_towards_destination},
+		destination      = closest_patrol_point,
+	}
+	return rat
 }
 easy_slicking :: proc(
 	level: Level,
@@ -684,7 +731,7 @@ easy_flame_turret :: proc(pos: [2]f32) -> (turret: Thing) {
 		pos         = pos,
 		// auto target flag
 		flags       = {.foe, .auto_targets, .auto_fires},
-		color       = raylib.Color{ 180, 41, 55, 255 },
+		color       = raylib.Color{180, 41, 55, 255},
 		draw_size   = {0.6, 0.6},
 		draw_thing  = .draw_dot,
 		max_health  = 100,
@@ -730,7 +777,7 @@ easy_flamethrower :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (flamet
 		draw_size    = {0.125, 0.125},
 		draw_thing   = .draw_dot,
 	}
-  return flamethrower
+	return flamethrower
 }
 easy_flame :: proc(pos: [2]f32, dir: [2]f32) -> (flame: Thing) {
 	flame_speed: f32 : 30
@@ -748,7 +795,7 @@ easy_flame :: proc(pos: [2]f32, dir: [2]f32) -> (flame: Thing) {
 		on_timeout       = .free_yourself,
 		on_contact       = .slide,
 	}
-  return flame
+	return flame
 }
 easy_bullet :: proc(pos: [2]f32, dir: [2]f32) -> (bullet: Thing) {
 	bullet_speed: f32 : 50
@@ -991,6 +1038,7 @@ Task :: enum {
 	tick_timer,
 	prepare_next_thing,
 	move_towards_target,
+	move_towards_destination,
 	move_with_mouse,
 	move_with_wasd,
 	do_gravity,
@@ -1089,6 +1137,39 @@ tasks :: [Task]TaskProc {
 				thing.running_strength * friction if .using_jetpack not_in prev_thing.temp_flags else jetpack_strength
 			thing.frame_acceleration += acceleration * dir
 			set_thing(&(game.things), idx, thing)
+		}
+	},
+	.move_towards_destination = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {
+		prev_thing, thing: Thing = {}, {}
+		success: bool = false
+		prev_thing, success = get_thing(&(prev_game.things), idx)
+		if !success {return}
+		thing, success = get_thing(&(game.things), idx)
+		if !success {return}
+		if .moves_towards_destination in prev_thing.temp_flags {
+			if destination, success := get_thing(&(game.things), thing.destination);
+			   success && .moves_towards_destination in prev_thing.temp_flags {
+				// get the directin towards target
+				dir: [2]f32 = linalg.normalize0(destination.pos - thing.pos)
+				// set the velocity with running speed, or jetpack if using jetpack
+				tile, _ := get_tile(game.level, linalg.to_i32(thing.pos))
+				friction: f32 = tile.friction
+				acceleration: f32 =
+					thing.running_strength * friction * min(30, linalg.length(destination.pos - thing.pos)) / 30 if .using_jetpack not_in prev_thing.temp_flags else jetpack_strength
+				thing.frame_acceleration += acceleration * dir
+
+        if linalg.length(destination.pos - thing.pos) < 5 {
+          thing.destination = destination.patrol_point
+        }
+				set_thing(&(game.things), idx, thing)
+			}
 		}
 	},
 	.move_with_mouse = proc(
@@ -1363,10 +1444,10 @@ tasks :: [Task]TaskProc {
 					bullet: Thing = easy_bullet(thing.pos, target.pos - thing.pos)
 					bullet_idx, success := push_thing(things, bullet)
 				}
-      if .shoots_fire in prev_thing.temp_flags {
-        fire: Thing = easy_flame(thing.pos, target.pos - thing.pos)
-        bullet_idx, success := push_thing(things, fire)
-      }
+				if .shoots_fire in prev_thing.temp_flags {
+					fire: Thing = easy_flame(thing.pos, target.pos - thing.pos)
+					bullet_idx, success := push_thing(things, fire)
+				}
 				thing.timer = 0
 				set_thing(things, idx, thing)
 			}
@@ -1540,6 +1621,28 @@ tasks :: [Task]TaskProc {
 			closest_target: ThingIdx = {}
 			closest_distance: f32 = thing.sight_range
 			if .friend in prev_thing.temp_flags {
+				for i in 0 ..< things.offset {
+					if i == idx.idx {continue}
+					if things.free[i] {continue}
+					other_idx: ThingIdx = {
+						idx        = i,
+						generation = things.generations[i],
+					}
+					other_thing, _ := get_thing(things, other_idx)
+					prev_other_thing, success := get_thing(things, other_idx)
+					if !success {continue}
+					if .foe in prev_other_thing.temp_flags &&
+					   other_thing.hurt_size > 0 &&
+					   other_thing.max_health > 0 {
+						distance: f32 =
+							linalg.length(other_thing.pos - thing.pos) -
+							other_thing.hurt_size * 0.5
+						if distance < closest_distance {
+							closest_target = other_idx
+							closest_distance = distance
+						}
+					}
+				}
 			}
 			if .foe in prev_thing.temp_flags {
 				for i in 0 ..< things.offset {
@@ -1705,14 +1808,20 @@ click_actions :: [ClickAction]TaskProc {
 								}
 							}
 						}
-        case 2: 
+					case 2:
 						if .left_mouse not_in prev_input.pressed_buttons {
 							turret_idx, success := push_thing(&(game.things), {})
 							if success {
 								turret: Thing = easy_flame_turret(thing.pos)
 								set_thing(&(game.things), turret_idx, turret)
-								flame_thrower: Thing = easy_flamethrower(&(game.things), turret_idx)
-								flame_thrower_idx, success := push_thing(&(game.things), flame_thrower)
+								flame_thrower: Thing = easy_flamethrower(
+									&(game.things),
+									turret_idx,
+								)
+								flame_thrower_idx, success := push_thing(
+									&(game.things),
+									flame_thrower,
+								)
 								if success {
 									turret.inventory1 = flame_thrower_idx
 									set_thing(&(game.things), turret_idx, turret)
@@ -1720,6 +1829,60 @@ click_actions :: [ClickAction]TaskProc {
 							}
 						}
 					case 3:
+						if .left_mouse not_in prev_input.pressed_buttons {
+							last_patrol_point, has_prev_point := get_thing(
+								&(game.things),
+								thing.patrol_point,
+							)
+							if has_prev_point {
+								for i in 0 ..< game.things.offset {
+									if i == idx.idx {continue}
+									if game.things.free[i] {continue}
+									other_idx: ThingIdx = {
+										idx        = i,
+										generation = game.things.generations[i],
+									}
+									other_thing, _ := get_thing(&(game.things), other_idx)
+									if check_idx(&(game.things), other_thing.patrol_point) {
+										if linalg.length(other_thing.pos - thing.pos) < 0.5 {
+											// 
+											last_patrol_point.patrol_point = other_idx
+											set_thing(
+												&(game.things),
+												thing.patrol_point,
+												last_patrol_point,
+											)
+											thing.patrol_point = {}
+											set_thing(&(game.things), idx, thing)
+											return
+										}
+									}
+								}
+							}
+
+
+							patrol_point_idx, success := push_thing(
+								&(game.things),
+								easy_patrol_point(thing.pos),
+							)
+							if success {
+								if has_prev_point {
+									last_patrol_point.patrol_point = patrol_point_idx
+									set_thing(
+										&(game.things),
+										thing.patrol_point,
+										last_patrol_point,
+									)
+								}
+							}
+							thing.patrol_point = patrol_point_idx
+							set_thing(&(game.things), idx, thing)
+						}
+					case 4:
+						if .left_mouse not_in prev_input.pressed_buttons {
+							push_thing(&(game.things), easy_rat(thing.pos, &(game.things)))
+						}
+					case 5:
 						rand: f32 = f32(input.random)
 						push_thing(
 							&(game.things),
@@ -1837,6 +2000,7 @@ resolve_things :: proc(
 	things: ^ThingPool = &(game.things)
 
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .prepare_next_thing)
+	resolve_task(frame_arena, prev_input, input, prev_game, game, .move_towards_destination)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .move_towards_target)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .move_with_mouse)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .move_with_wasd)
@@ -2055,28 +2219,43 @@ tick :: proc(
 	}
 
 	resolve_things(frame_arena, prev_input, input, prev_game, game)
-
-	tst := 4
-	fmt.println(game.things.free[tst])
 }
 // drawing
 DrawProc :: proc(things: ^ThingPool, thing: Thing, camera: ThingIdx)
 Draw :: enum {
 	draw_nothing,
 	draw_dot,
+	draw_patrol_point,
+}
+draw_dot :: proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {
+	camera, successful := get_thing(things, camera_idx)
+	//raylib.DrawText(fmt.caprint(thing.pos), 400, 50, 16, raylib.BLACK)
+	if successful {
+		raylib.DrawCircleV(
+			world_to_screenspace(things, thing.pos, camera_idx),
+			thing.draw_size.x * camera.zoom,
+			thing.color,
+		)
+	}
 }
 drawing :: [Draw]DrawProc {
 	.draw_nothing = proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {},
-	.draw_dot = proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {
+	.draw_dot = draw_dot,
+	.draw_patrol_point = proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {
+		draw_dot(things, thing, camera_idx)
 		camera, successful := get_thing(things, camera_idx)
-		//raylib.DrawText(fmt.caprint(thing.pos), 400, 50, 16, raylib.BLACK)
 		if successful {
-			raylib.DrawCircleV(
-				world_to_screenspace(things, thing.pos, camera_idx),
-				thing.draw_size.x * camera.zoom,
-				thing.color,
-			)
+			next_patrol_point, success := get_thing(things, thing.patrol_point)
+			if success {
+				raylib.DrawLineV(
+					world_to_screenspace(things, thing.pos, camera_idx),
+					world_to_screenspace(things, next_patrol_point.pos, camera_idx),
+					thing.color,
+				)
+
+			}
 		}
+
 	},
 }
 
