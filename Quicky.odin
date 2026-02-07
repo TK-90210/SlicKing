@@ -531,6 +531,8 @@ ThingFlags :: bit_set[enum {
 	freezing,
 	ignore_level,
 	ignore_friction,
+	spawns_golems,
+	shoots_snow,
 	shoots_ice,
 	shoots_bullets,
 	shoots_fire,
@@ -553,6 +555,7 @@ Thing :: struct {
 	target:             ThingIdx,
 	inventory1:         ThingIdx,
 	inventory2:         ThingIdx,
+	inventory3:         ThingIdx,
 	frame_acceleration: [2]f32,
 	health:             i32,
 	max_health:         i32,
@@ -648,9 +651,49 @@ easy_rat :: proc(start_pos: [2]f32, things: ^ThingPool) -> (rat: Thing) {
 		hurt_size        = 0.52,
 		flags            = {.foe, .moves_towards_destination, .auto_targets, .auto_fires},
 		destination      = closest_patrol_point,
-    sight_range      = 15,
+		sight_range      = 15,
 	}
 	return rat
+}
+easy_snow_golem :: proc(starting_pos: [2]f32) -> (snow_golem: Thing) {
+	snow_golem = {
+		pos              = starting_pos, // position
+		velocity         = {0, 0}, // velocity
+		running_strength = 4, // running_strength
+		drag_coefficient = 1.6, // drag_coefficient
+		size             = 0, // size
+		on_wall          = Walls{}, // on_wall
+		flags            = {.moves_with_wasd, .friend, .auto_targets, .auto_fires}, // flags
+		color            = raylib.WHITE,
+		draw_size        = {0.5, 0.5},
+		draw_thing       = .draw_dot, // draw_thing
+		max_health       = 30,
+		health           = 30,
+		hurt_size        = 0.45,
+		sight_range      = 10,
+	}
+	return snow_golem
+}
+easy_golem_spawner :: proc(pos: [2]f32, destructable: bool) -> (spawner: Thing) {
+	fire_rate: f32 = 5
+	spawner = {
+		pos          = pos,
+		flags        = {.auto_targets, .spawns_golems, .auto_fires},
+		color        = raylib.Color{152, 132, 255, 255},
+		draw_size    = {0.7, 0.7},
+		draw_thing   = .draw_dot,
+		sight_range  = 10,
+		timer_length = fire_rate,
+		timer        = -1,
+		on_timeout   = .do_nothing,
+	}
+	if destructable {
+		spawner.flags += {.friend}
+		spawner.max_health = 500
+		spawner.health = 500
+		spawner.hurt_size = 0.45
+	}
+	return spawner
 }
 easy_slicking :: proc(
 	level: Level,
@@ -678,6 +721,22 @@ easy_slicking :: proc(
 	}
 	return slicking_thing
 }
+easy_snow_gun :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (snow_gun: Thing) {
+	fire_rate: f32 = 0
+	target, success := get_thing(thing_pool, user_idx)
+	snow_gun = {
+		pos          = target.pos,
+		target       = user_idx,
+		flags        = {.moves_with_target, .ignore_level, .ignore_friction, .shoots_snow},
+		timer_length = fire_rate,
+		timer        = -1,
+		on_timeout   = .do_nothing,
+		color        = raylib.BLACK,
+		draw_size    = {0.125, 0.125},
+		draw_thing   = .draw_dot,
+	}
+	return snow_gun
+}
 easy_ice_gun :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (ice_gun: Thing) {
 	fire_rate: f32 = 0.3
 	target, success := get_thing(thing_pool, user_idx)
@@ -693,6 +752,24 @@ easy_ice_gun :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (ice_gun: Th
 		draw_thing   = .draw_dot,
 	}
 	return ice_gun
+}
+easy_snow_ball :: proc(pos: [2]f32, dir: [2]f32) -> (snow_ball: Thing) {
+	snow_ball_speed: f32 : 70
+	snow_ball = {
+		pos              = pos,
+		velocity         = linalg.normalize0(dir) * snow_ball_speed,
+		drag_coefficient = 1.0, // streamlined body from wikipedia
+		attack_strength  = 1,
+		flags            = {.ignore_friction, .piercing, .friend},
+		color            = raylib.WHITE,
+		draw_size        = {0.125, 0.125},
+		timer            = 0,
+		timer_length     = 0.5,
+		draw_thing       = .draw_dot,
+		on_timeout       = .free_yourself,
+		on_contact       = .stop,
+	}
+	return snow_ball
 }
 easy_ice_ball :: proc(pos: [2]f32, dir: [2]f32) -> (ice_ball: Thing) {
 	ice_ball_speed: f32 : 70
@@ -804,7 +881,7 @@ easy_bullet :: proc(pos: [2]f32, dir: [2]f32) -> (bullet: Thing) {
 		pos              = pos,
 		velocity         = linalg.normalize0(dir) * bullet_speed,
 		drag_coefficient = 0.04, // streamlined body from wikipedia
-		attack_strength  = 3,
+		attack_strength  = 6,
 		flags            = {.ignore_friction, .piercing, .foe},
 		color            = raylib.BLACK,
 		draw_size        = {0.125, 0.125},
@@ -1166,9 +1243,9 @@ tasks :: [Task]TaskProc {
 					thing.running_strength * friction * min(30, linalg.length(destination.pos - thing.pos)) / 30 if .using_jetpack not_in prev_thing.temp_flags else jetpack_strength
 				thing.frame_acceleration += acceleration * dir
 
-        if linalg.length(destination.pos - thing.pos) < 5 {
-          thing.destination = destination.patrol_point
-        }
+				if linalg.length(destination.pos - thing.pos) < 5 {
+					thing.destination = destination.patrol_point
+				}
 				set_thing(&(game.things), idx, thing)
 			}
 		}
@@ -1437,6 +1514,23 @@ tasks :: [Task]TaskProc {
 				if !success {return}
 				target, success = get_thing(prev_things, user.target)
 				if !success {return}
+				if .spawns_golems in prev_thing.temp_flags {
+					golem_idx, success := push_thing(things, {})
+					if success {
+						golem: Thing = easy_snow_golem(thing.pos)
+						set_thing(&(game.things), golem_idx, golem)
+						snow_gun: Thing = easy_snow_gun(&(game.things), golem_idx)
+						snow_gun_idx, success := push_thing(&(game.things), snow_gun)
+						if success {
+							golem.inventory1 = snow_gun_idx
+							set_thing(&(game.things), golem_idx, golem)
+						}
+					}
+				}
+				if .shoots_snow in prev_thing.temp_flags {
+					snow_ball: Thing = easy_snow_ball(thing.pos, target.pos - thing.pos)
+					snow_ball_idx, success := push_thing(things, snow_ball)
+				}
 				if .shoots_ice in prev_thing.temp_flags {
 					ice_ball: Thing = easy_ice_ball(thing.pos, target.pos - thing.pos)
 					ice_ball_idx, success := push_thing(things, ice_ball)
@@ -1669,6 +1763,33 @@ tasks :: [Task]TaskProc {
 					}
 				}
 			}
+			if .friend not_in prev_thing.temp_flags &&
+			   .foe not_in prev_thing.temp_flags &&
+			   .spawns_golems in prev_thing.temp_flags {
+				for i in 0 ..< things.offset {
+					if i == idx.idx {continue}
+					if things.free[i] {continue}
+					other_idx: ThingIdx = {
+						idx        = i,
+						generation = things.generations[i],
+					}
+					other_thing, _ := get_thing(things, other_idx)
+					prev_other_thing, success := get_thing(things, other_idx)
+					if !success {continue}
+					if .friend in prev_other_thing.temp_flags &&
+					   other_thing.on_click == .slicking &&
+					   other_thing.hurt_size > 0 &&
+					   other_thing.max_health > 0 {
+						distance: f32 =
+							linalg.length(other_thing.pos - thing.pos) -
+							other_thing.hurt_size * 0.5
+						if distance < closest_distance {
+							closest_target = other_idx
+							closest_distance = distance
+						}
+					}
+				}
+			}
 			thing.target = closest_target
 			set_thing(things, idx, thing)
 		}
@@ -1738,17 +1859,24 @@ click_actions :: [ClickAction]TaskProc {
 					thing.temp_flags += {.using_jetpack, .moves_towards_target}
 				}
 			case 1:
+				// snow_gun
+				snow_gun, success := get_thing(&(game.things), thing.inventory2)
+				if success {
+					snow_gun.temp_flags += {.shooting}
+					set_thing(&(game.things), thing.inventory2, snow_gun)
+				}
+			case 2:
 				// ice_gun
-				ice_gun, success := get_thing(&(game.things), thing.inventory2)
+				ice_gun, success := get_thing(&(game.things), thing.inventory3)
 				if success {
 					ice_gun.temp_flags += {.shooting}
-					set_thing(&(game.things), thing.inventory2, ice_gun)
+					set_thing(&(game.things), thing.inventory3, ice_gun)
 				}
 			}
 		}
 		set_thing(&(game.things), idx, thing)
 	},
-// MOUSE // 
+	// MOUSE // 
 	.mouse = proc(
 		frame_arena: ^virtual.Arena,
 		prev_input: InputState,
@@ -1769,156 +1897,168 @@ click_actions :: [ClickAction]TaskProc {
 			paint_line(game.level, prev_thing.pos, thing.pos, Every_Tile, kind)
 		//queue_tile_change(game.level, linalg.to_i32(thing.pos), kind)
 		case .edit_things:
-				if tile, _ := get_tile(game.level, linalg.to_i32(thing.pos)); !tile.solid {
-					switch game.hot_key {
-					case 0:
-						if .left_mouse not_in prev_input.pressed_buttons {
-							cam_node, err := virtual.new(frame_arena, ThingNode)
-							// if the frame arena is out of memory just don't make a new slicking
-							// no need to crash
-							// yet
-							if err == .None {
-								slicking_idx, success := push_thing(&(game.things), {})
-								if success {
-									slicking: Thing = easy_slicking(game.level, thing.pos, idx)
-									slicking.zoom = 45.
-									set_thing(&(game.things), slicking_idx, slicking)
+			if tile, _ := get_tile(game.level, linalg.to_i32(thing.pos)); !tile.solid {
+				switch game.hot_key {
+				case 0:
+					if .left_mouse not_in prev_input.pressed_buttons {
+						cam_node, err := virtual.new(frame_arena, ThingNode)
+						// if the frame arena is out of memory just don't make a new slicking
+						// no need to crash
+						// yet
+						if err == .None {
+							slicking_idx, success := push_thing(&(game.things), {})
+							if success {
+								slicking: Thing = easy_slicking(game.level, thing.pos, idx)
+								slicking.zoom = 45.
+								set_thing(&(game.things), slicking_idx, slicking)
 
-									ice_gun: Thing = easy_ice_gun(&(game.things), slicking_idx)
-									ice_gun_idx, succes := push_thing(&(game.things), ice_gun)
+								{
+									snow_gun: Thing = easy_snow_gun(&(game.things), slicking_idx)
+									snow_gun_idx, success := push_thing(&(game.things), snow_gun)
 									if success {
-										slicking.inventory2 = ice_gun_idx
+										slicking.inventory2 = snow_gun_idx
 										set_thing(&(game.things), slicking_idx, slicking)
 									}
-									cam_node.thing = slicking_idx
-									list.push_front(&(game.cameras), &(cam_node.link))
 								}
-							}
-						}
-					case 1:
-						if .left_mouse not_in prev_input.pressed_buttons {
-							turret_idx, success := push_thing(&(game.things), {})
-							if success {
-								turret: Thing = easy_turret(thing.pos)
-								set_thing(&(game.things), turret_idx, turret)
-								gun: Thing = easy_gun(&(game.things), turret_idx)
-								gun_idx, success := push_thing(&(game.things), gun)
-								if success {
-									turret.inventory1 = gun_idx
-									set_thing(&(game.things), turret_idx, turret)
-								}
-							}
-						}
-					case 2:
-						if .left_mouse not_in prev_input.pressed_buttons {
-							turret_idx, success := push_thing(&(game.things), {})
-							if success {
-								turret: Thing = easy_flame_turret(thing.pos)
-								set_thing(&(game.things), turret_idx, turret)
-								flame_thrower: Thing = easy_flamethrower(
-									&(game.things),
-									turret_idx,
-								)
-								flame_thrower_idx, success := push_thing(
-									&(game.things),
-									flame_thrower,
-								)
-								if success {
-									turret.inventory1 = flame_thrower_idx
-									set_thing(&(game.things), turret_idx, turret)
-								}
-							}
-						}
-					case 3:
-						if .left_mouse not_in prev_input.pressed_buttons {
-							last_patrol_point, has_prev_point := get_thing(
-								&(game.things),
-								thing.patrol_point,
-							)
-							if has_prev_point {
-								for i in 0 ..< game.things.offset {
-									if i == idx.idx {continue}
-									if game.things.free[i] {continue}
-									other_idx: ThingIdx = {
-										idx        = i,
-										generation = game.things.generations[i],
-									}
-									other_thing, _ := get_thing(&(game.things), other_idx)
-									if check_idx(&(game.things), other_thing.patrol_point) {
-										if linalg.length(other_thing.pos - thing.pos) < 0.5 {
-											// 
-											last_patrol_point.patrol_point = other_idx
-											set_thing(
-												&(game.things),
-												thing.patrol_point,
-												last_patrol_point,
-											)
-											thing.patrol_point = {}
-											set_thing(&(game.things), idx, thing)
-											return
-										}
+								{
+									ice_gun: Thing = easy_ice_gun(&(game.things), slicking_idx)
+									ice_gun_idx, success := push_thing(&(game.things), ice_gun)
+									if success {
+										slicking.inventory3 = ice_gun_idx
+										set_thing(&(game.things), slicking_idx, slicking)
 									}
 								}
-							}
-
-
-							patrol_point_idx, success := push_thing(
-								&(game.things),
-								easy_patrol_point(thing.pos),
-							)
-							if success {
-								if has_prev_point {
-									last_patrol_point.patrol_point = patrol_point_idx
-									set_thing(
-										&(game.things),
-										thing.patrol_point,
-										last_patrol_point,
-									)
-								}
-							}
-							thing.patrol_point = patrol_point_idx
-							set_thing(&(game.things), idx, thing)
-						}
-					case 4:
-						if .left_mouse not_in prev_input.pressed_buttons {
-							rat_idx, success := push_thing(&(game.things), {})
-							if success {
-								rat: Thing = easy_rat(thing.pos, &(game.things))
-								set_thing(&(game.things), rat_idx, rat)
-								gun: Thing = easy_gun(&(game.things), rat_idx)
-								gun_idx, success := push_thing(&(game.things), gun)
-								if success {
-									rat.inventory1 = gun_idx
-									set_thing(&(game.things), rat_idx, rat)
-								}
+								cam_node.thing = slicking_idx
+								list.push_front(&(game.cameras), &(cam_node.link))
 							}
 						}
-        case 5:
-						if .left_mouse not_in prev_input.pressed_buttons {
-							rat_idx, success := push_thing(&(game.things), {})
-							if success {
-								rat: Thing = easy_rat(thing.pos, &(game.things))
-								set_thing(&(game.things), rat_idx, rat)
-								flame_thrower: Thing = easy_flamethrower(&(game.things), rat_idx)
-								flame_thrower_idx, success := push_thing(&(game.things), flame_thrower)
-								if success {
-									rat.inventory1 = flame_thrower_idx
-									set_thing(&(game.things), rat_idx, rat)
-								}
-							}
-						}
-					case 6:
-						rand: f32 = f32(input.random)
-						push_thing(
-							&(game.things),
-							easy_dot(
-								game.level,
-								thing.pos,
-								linalg.normalize([2]f32{linalg.sin(rand), linalg.cos(rand)}) * 30,
-							),
-						)
 					}
+				case 1:
+					if .left_mouse not_in prev_input.pressed_buttons {
+						turret_idx, success := push_thing(&(game.things), {})
+						if success {
+							turret: Thing = easy_turret(thing.pos)
+							set_thing(&(game.things), turret_idx, turret)
+							gun: Thing = easy_gun(&(game.things), turret_idx)
+							gun_idx, success := push_thing(&(game.things), gun)
+							if success {
+								turret.inventory1 = gun_idx
+								set_thing(&(game.things), turret_idx, turret)
+							}
+						}
+					}
+				case 2:
+					if .left_mouse not_in prev_input.pressed_buttons {
+						turret_idx, success := push_thing(&(game.things), {})
+						if success {
+							turret: Thing = easy_flame_turret(thing.pos)
+							set_thing(&(game.things), turret_idx, turret)
+							flame_thrower: Thing = easy_flamethrower(&(game.things), turret_idx)
+							flame_thrower_idx, success := push_thing(&(game.things), flame_thrower)
+							if success {
+								turret.inventory1 = flame_thrower_idx
+								set_thing(&(game.things), turret_idx, turret)
+							}
+						}
+					}
+				case 3:
+					if .left_mouse not_in prev_input.pressed_buttons {
+						last_patrol_point, has_prev_point := get_thing(
+							&(game.things),
+							thing.patrol_point,
+						)
+						if has_prev_point {
+							for i in 0 ..< game.things.offset {
+								if i == idx.idx {continue}
+								if game.things.free[i] {continue}
+								other_idx: ThingIdx = {
+									idx        = i,
+									generation = game.things.generations[i],
+								}
+								other_thing, _ := get_thing(&(game.things), other_idx)
+								if check_idx(&(game.things), other_thing.patrol_point) {
+									if linalg.length(other_thing.pos - thing.pos) < 0.5 {
+										// 
+										last_patrol_point.patrol_point = other_idx
+										set_thing(
+											&(game.things),
+											thing.patrol_point,
+											last_patrol_point,
+										)
+										thing.patrol_point = {}
+										set_thing(&(game.things), idx, thing)
+										return
+									}
+								}
+							}
+						}
+
+
+						patrol_point_idx, success := push_thing(
+							&(game.things),
+							easy_patrol_point(thing.pos),
+						)
+						if success {
+							if has_prev_point {
+								last_patrol_point.patrol_point = patrol_point_idx
+								set_thing(&(game.things), thing.patrol_point, last_patrol_point)
+							}
+						}
+						thing.patrol_point = patrol_point_idx
+						set_thing(&(game.things), idx, thing)
+					}
+				case 4:
+					if .left_mouse not_in prev_input.pressed_buttons {
+						rat_idx, success := push_thing(&(game.things), {})
+						if success {
+							rat: Thing = easy_rat(thing.pos, &(game.things))
+							set_thing(&(game.things), rat_idx, rat)
+							gun: Thing = easy_gun(&(game.things), rat_idx)
+							gun_idx, success := push_thing(&(game.things), gun)
+							if success {
+								rat.inventory1 = gun_idx
+								set_thing(&(game.things), rat_idx, rat)
+							}
+						}
+					}
+				case 5:
+					if .left_mouse not_in prev_input.pressed_buttons {
+						rat_idx, success := push_thing(&(game.things), {})
+						if success {
+							rat: Thing = easy_rat(thing.pos, &(game.things))
+							set_thing(&(game.things), rat_idx, rat)
+							flame_thrower: Thing = easy_flamethrower(&(game.things), rat_idx)
+							flame_thrower_idx, success := push_thing(&(game.things), flame_thrower)
+							if success {
+								rat.inventory1 = flame_thrower_idx
+								set_thing(&(game.things), rat_idx, rat)
+							}
+						}
+					}
+				case 6:
+					if .left_mouse not_in prev_input.pressed_buttons {
+						// snow golem spawner
+						spawner: Thing = easy_golem_spawner(thing.pos, false)
+						spawner_idx, success := push_thing(&(game.things), {})
+						if success {
+							spawner.inventory1 = spawner_idx
+							set_thing(&(game.things), spawner_idx, spawner)
+						}
+					}
+
+
+				case 7:
+					rand: f32 = f32(input.random)
+					push_thing(
+						&(game.things),
+						easy_dot(
+							game.level,
+							thing.pos,
+							linalg.normalize([2]f32{linalg.sin(rand), linalg.cos(rand)}) * 30,
+						),
+					)
 				}
+			}
 		case .player_actions:
 		}
 	},
