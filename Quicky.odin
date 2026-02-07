@@ -1748,6 +1748,7 @@ click_actions :: [ClickAction]TaskProc {
 		}
 		set_thing(&(game.things), idx, thing)
 	},
+// MOUSE // 
 	.mouse = proc(
 		frame_arena: ^virtual.Arena,
 		prev_input: InputState,
@@ -1768,7 +1769,6 @@ click_actions :: [ClickAction]TaskProc {
 			paint_line(game.level, prev_thing.pos, thing.pos, Every_Tile, kind)
 		//queue_tile_change(game.level, linalg.to_i32(thing.pos), kind)
 		case .edit_things:
-			if game.hot_key < 9 {
 				if tile, _ := get_tile(game.level, linalg.to_i32(thing.pos)); !tile.solid {
 					switch game.hot_key {
 					case 0:
@@ -1893,7 +1893,21 @@ click_actions :: [ClickAction]TaskProc {
 								}
 							}
 						}
-					case 5:
+        case 5:
+						if .left_mouse not_in prev_input.pressed_buttons {
+							rat_idx, success := push_thing(&(game.things), {})
+							if success {
+								rat: Thing = easy_rat(thing.pos, &(game.things))
+								set_thing(&(game.things), rat_idx, rat)
+								flame_thrower: Thing = easy_flamethrower(&(game.things), rat_idx)
+								flame_thrower_idx, success := push_thing(&(game.things), flame_thrower)
+								if success {
+									rat.inventory1 = flame_thrower_idx
+									set_thing(&(game.things), rat_idx, rat)
+								}
+							}
+						}
+					case 6:
 						rand: f32 = f32(input.random)
 						push_thing(
 							&(game.things),
@@ -1905,7 +1919,6 @@ click_actions :: [ClickAction]TaskProc {
 						)
 					}
 				}
-			}
 		case .player_actions:
 		}
 	},
@@ -2227,6 +2240,18 @@ tick :: proc(
 	}
 	if .five in input.pressed_buttons {
 		game.hot_key = 4
+	}
+	if .six in input.pressed_buttons {
+		game.hot_key = 5
+	}
+	if .seven in input.pressed_buttons {
+		game.hot_key = 6
+	}
+	if .eight in input.pressed_buttons {
+		game.hot_key = 7
+	}
+	if .nine in input.pressed_buttons {
+		game.hot_key = 8
 	}
 
 	resolve_things(frame_arena, prev_input, input, prev_game, game)
