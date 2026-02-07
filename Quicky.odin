@@ -646,8 +646,9 @@ easy_rat :: proc(start_pos: [2]f32, things: ^ThingPool) -> (rat: Thing) {
 		health           = 100,
 		max_health       = 100,
 		hurt_size        = 0.52,
-		flags            = {.foe, .moves_towards_destination},
+		flags            = {.foe, .moves_towards_destination, .auto_targets, .auto_fires},
 		destination      = closest_patrol_point,
+    sight_range      = 15,
 	}
 	return rat
 }
@@ -804,7 +805,7 @@ easy_bullet :: proc(pos: [2]f32, dir: [2]f32) -> (bullet: Thing) {
 		velocity         = linalg.normalize0(dir) * bullet_speed,
 		drag_coefficient = 0.04, // streamlined body from wikipedia
 		attack_strength  = 3,
-		flags            = {.freezing, .ignore_friction, .piercing, .foe},
+		flags            = {.ignore_friction, .piercing, .foe},
 		color            = raylib.BLACK,
 		draw_size        = {0.125, 0.125},
 		draw_thing       = .draw_dot,
@@ -1880,7 +1881,17 @@ click_actions :: [ClickAction]TaskProc {
 						}
 					case 4:
 						if .left_mouse not_in prev_input.pressed_buttons {
-							push_thing(&(game.things), easy_rat(thing.pos, &(game.things)))
+							rat_idx, success := push_thing(&(game.things), {})
+							if success {
+								rat: Thing = easy_rat(thing.pos, &(game.things))
+								set_thing(&(game.things), rat_idx, rat)
+								gun: Thing = easy_gun(&(game.things), rat_idx)
+								gun_idx, success := push_thing(&(game.things), gun)
+								if success {
+									rat.inventory1 = gun_idx
+									set_thing(&(game.things), rat_idx, rat)
+								}
+							}
 						}
 					case 5:
 						rand: f32 = f32(input.random)
