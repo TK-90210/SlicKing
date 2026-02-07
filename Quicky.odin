@@ -73,6 +73,32 @@ Segment :: struct {
 	start: [2]f32,
 	end:   [2]f32,
 }
+Circle :: struct {
+	center: [2]f32,
+	size:   f32,
+}
+segment_circle_collision :: proc(seg: Segment, circ: Circle) -> (hit: bool) {
+	dir: [2]f32 = seg.end - seg.start
+	f: [2]f32 = seg.start - circ.center
+	a: f32 = linalg.vector_dot(dir, dir)
+	b: f32 = 2 * linalg.vector_dot(f, dir)
+	c: f32 = linalg.vector_dot(f, f) - circ.size * circ.size
+	discriminant: f32 = b * b - 4 * a * c
+	if discriminant < 0 {
+		return false
+	} else {
+		discriminant = math.sqrt(discriminant)
+		t1: f32 = (-b - discriminant) / (2 * a)
+		t2: f32 = (-b + discriminant) / (2 * a)
+		if t1 >= 0 && t1 <= 1 {
+			return true
+		}
+		if t2 >= 0 && t2 <= 1 {
+			return true
+		}
+		return false
+	}
+}
 similarity :: linalg.vector_dot
 // we'll just do this for now
 Wall :: enum {
@@ -407,7 +433,6 @@ draw_level :: proc(things: ^ThingPool, level: Level, current_cam: ThingIdx) {
 		[2]i32{2, 2}
 	max_cell.x = min(max_cell.x, level.size.x)
 	max_cell.y = min(max_cell.y, level.size.y)
-  fmt.println(min_cell, max_cell)
 	for y in min_cell.y ..< max_cell.y {
 		for x in min_cell.x ..< max_cell.x {
 			pos: CellPos = {x, y}
@@ -506,7 +531,14 @@ ThingFlags :: bit_set[enum {
 	ignore_level,
 	ignore_friction,
 	shoots_ice,
+	shoots_bullets,
+  shoots_fire,
 	shooting,
+	friend,
+	foe,
+	piercing,
+	auto_targets,
+	auto_fires,
 }]
 // THING //
 Thing :: struct {
@@ -521,7 +553,11 @@ Thing :: struct {
 	inventory1:         ThingIdx,
 	inventory2:         ThingIdx,
 	frame_acceleration: [2]f32,
-	//on_corners: Corners,
+	health:             i32,
+	max_health:         i32,
+	attack_strength:    i32,
+	piercing:           i32,
+	hurt_size:          f32,
 	flags:              ThingFlags,
 	temp_flags:         ThingFlags,
 
@@ -537,6 +573,7 @@ Thing :: struct {
 	on_timeout:         TimeoutAction,
 	// on contact
 	on_contact:         WallContactAction,
+	sight_range:        f32,
 }
 nil_thing :: proc() -> Thing {
 	thing: Thing = {}
@@ -552,13 +589,16 @@ easy_dot :: proc(level: Level, start: [2]f32, velocity: [2]f32) -> Thing {
 		size             = 0, // size of a point is 0
 		on_wall          = Walls{}, // on_wall
 		target           = ThingIdx{}, // target
-		flags            = {.does_gravity, .freezing}, // flags
-		temp_flags       = {.does_gravity, .freezing}, // temp_flags
+		flags            = {.does_gravity, .freezing, .foe}, // flags
+		temp_flags       = {.does_gravity, .freezing, .foe}, // temp_flags
 		color            = raylib.BLUE,
 		draw_size        = {0.5, 0.5},
 		draw_thing       = .draw_dot, // draw_thing
 		timer            = 0,
-		timer_length     = 5,
+		timer_length     = 0,
+		max_health       = 100,
+		health           = 100,
+		hurt_size        = 0.5,
 		on_timeout       = .free_yourself,
 	}
 
@@ -579,12 +619,14 @@ easy_slicking :: proc(
 		size             = 0, // size
 		on_wall          = Walls{}, // on_wall
 		target           = mouse_target, // target
-		flags            = {.moves_with_wasd}, // flags
-		temp_flags       = {.moves_with_wasd}, // temp_flags
+		flags            = {.moves_with_wasd, .friend}, // flags
 		color            = raylib.BLACK,
 		draw_size        = {0.5, 0.5},
 		draw_thing       = .draw_dot, // draw_thing
 		on_click         = .slicking, // on_click
+		max_health       = 500,
+		health           = 500,
+		hurt_size        = 0.45,
 	}
 	return slicking_thing
 }
@@ -595,7 +637,6 @@ easy_ice_gun :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (ice_gun: Th
 		pos          = target.pos,
 		target       = user_idx,
 		flags        = {.moves_with_target, .ignore_level, .ignore_friction, .shoots_ice},
-		temp_flags   = {.moves_with_target, .ignore_level, .ignore_friction, .shoots_ice},
 		timer_length = fire_rate,
 		timer        = -1,
 		on_timeout   = .do_nothing,
@@ -611,7 +652,8 @@ easy_ice_ball :: proc(pos: [2]f32, dir: [2]f32) -> (ice_ball: Thing) {
 		pos              = pos,
 		velocity         = linalg.normalize0(dir) * ice_ball_speed,
 		drag_coefficient = 0.04, // streamlined body from wikipedia
-		flags            = {.freezing, .ignore_friction},
+		attack_strength  = 3,
+		flags            = {.freezing, .ignore_friction, .piercing, .friend},
 		color            = raylib.Color{152, 132, 255, 255},
 		draw_size        = {0.125, 0.125},
 		draw_thing       = .draw_dot,
@@ -621,6 +663,110 @@ easy_ice_ball :: proc(pos: [2]f32, dir: [2]f32) -> (ice_ball: Thing) {
 		on_contact       = .bounce,
 	}
 	return ice_ball
+}
+easy_turret :: proc(pos: [2]f32) -> (turret: Thing) {
+	turret = {
+		pos         = pos,
+		// auto target flag
+		flags       = {.foe, .auto_targets, .auto_fires},
+		color       = raylib.DARKGRAY,
+		draw_size   = {0.6, 0.6},
+		draw_thing  = .draw_dot,
+		max_health  = 100,
+		health      = 100,
+		hurt_size   = 0.62,
+		sight_range = 30,
+	}
+	return turret
+}
+easy_flame_turret :: proc(pos: [2]f32) -> (turret: Thing) {
+	turret = {
+		pos         = pos,
+		// auto target flag
+		flags       = {.foe, .auto_targets, .auto_fires},
+		color       = raylib.Color{ 180, 41, 55, 255 },
+		draw_size   = {0.6, 0.6},
+		draw_thing  = .draw_dot,
+		max_health  = 100,
+		health      = 100,
+		hurt_size   = 0.62,
+		sight_range = 30,
+	}
+	return turret
+}
+easy_gun :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (gun: Thing) {
+	fire_rate: f32 = 0.3
+	user, success := get_thing(thing_pool, user_idx)
+	if !success {
+		user = {}
+	}
+	gun = {
+		pos          = user.pos,
+		target       = user_idx,
+		flags        = {.moves_with_target, .ignore_level, .ignore_friction, .shoots_bullets},
+		timer_length = fire_rate,
+		timer        = -1,
+		on_timeout   = .do_nothing,
+		color        = raylib.BLACK,
+		draw_size    = {0.125, 0.125},
+		draw_thing   = .draw_dot,
+	}
+	return gun
+}
+easy_flamethrower :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (flamethrower: Thing) {
+	fire_rate: f32 = 0
+	user, success := get_thing(thing_pool, user_idx)
+	if !success {
+		user = {}
+	}
+	flamethrower = {
+		pos          = user.pos,
+		target       = user_idx,
+		flags        = {.moves_with_target, .ignore_level, .ignore_friction, .shoots_fire},
+		timer_length = fire_rate,
+		timer        = -1,
+		on_timeout   = .do_nothing,
+		color        = raylib.ORANGE,
+		draw_size    = {0.125, 0.125},
+		draw_thing   = .draw_dot,
+	}
+  return flamethrower
+}
+easy_flame :: proc(pos: [2]f32, dir: [2]f32) -> (flame: Thing) {
+	flame_speed: f32 : 30
+	flame = {
+		pos              = pos,
+		velocity         = linalg.normalize0(dir) * flame_speed,
+		drag_coefficient = 1.4, // streamlined body from wikipedia
+		attack_strength  = 3,
+		flags            = {.freezing, .ignore_friction, .piercing, .foe},
+		color            = raylib.RED,
+		draw_size        = {0.125, 0.125},
+		draw_thing       = .draw_dot,
+		timer            = 0,
+		timer_length     = 0.5,
+		on_timeout       = .free_yourself,
+		on_contact       = .slide,
+	}
+  return flame
+}
+easy_bullet :: proc(pos: [2]f32, dir: [2]f32) -> (bullet: Thing) {
+	bullet_speed: f32 : 50
+	bullet = {
+		pos              = pos,
+		velocity         = linalg.normalize0(dir) * bullet_speed,
+		drag_coefficient = 0.04, // streamlined body from wikipedia
+		attack_strength  = 3,
+		flags            = {.freezing, .ignore_friction, .piercing, .foe},
+		color            = raylib.BLACK,
+		draw_size        = {0.125, 0.125},
+		draw_thing       = .draw_dot,
+		timer            = 0,
+		timer_length     = 0.5,
+		on_timeout       = .free_yourself,
+		on_contact       = .bounce,
+	}
+	return bullet
 }
 easy_stationary_camera :: proc(level: Level, pos: [2]f32, zoom: f32) -> (camera_thing: Thing) {
 	camera_thing = {
@@ -632,7 +778,7 @@ easy_stationary_camera :: proc(level: Level, pos: [2]f32, zoom: f32) -> (camera_
 }
 easy_mouse :: proc(level: Level) -> (mouse_thing: Thing) {
 	mouse_thing = {
-    zoom = 20,
+		zoom             = 20,
 		pos              = level_center(level), // position
 		velocity         = {0, 0}, // velocity
 		running_strength = 0, // running_strength
@@ -854,6 +1000,10 @@ Task :: enum {
 	shoot,
 	freeze,
 	handle_click,
+	attack,
+	evaluate_life,
+	auto_target,
+	auto_fire,
 }
 tasks :: [Task]TaskProc {
 	.do_nothing = proc(
@@ -1209,6 +1359,14 @@ tasks :: [Task]TaskProc {
 					ice_ball: Thing = easy_ice_ball(thing.pos, target.pos - thing.pos)
 					ice_ball_idx, success := push_thing(things, ice_ball)
 				}
+				if .shoots_bullets in prev_thing.temp_flags {
+					bullet: Thing = easy_bullet(thing.pos, target.pos - thing.pos)
+					bullet_idx, success := push_thing(things, bullet)
+				}
+      if .shoots_fire in prev_thing.temp_flags {
+        fire: Thing = easy_flame(thing.pos, target.pos - thing.pos)
+        bullet_idx, success := push_thing(things, fire)
+      }
 				thing.timer = 0
 				set_thing(things, idx, thing)
 			}
@@ -1249,6 +1407,191 @@ tasks :: [Task]TaskProc {
 		if thing.on_click != .do_nothing && .left_mouse in input.pressed_buttons {
 			click_actions := click_actions
 			click_actions[thing.on_click](frame_arena, prev_input, input, prev_game, game, idx)
+		}
+	},
+	.attack = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
+		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
+		thing, success = get_thing(things, idx)
+		if !success {return}
+		if thing.attack_strength > 0 {
+			if .friend in prev_thing.temp_flags {
+				for i in 0 ..< things.offset {
+					if i == idx.idx {continue}
+					if things.free[i] {continue}
+					other_idx: ThingIdx = {
+						idx        = i,
+						generation = things.generations[i],
+					}
+					other_thing, _ := get_thing(things, other_idx)
+					prev_other_thing, success := get_thing(things, other_idx)
+					if !success {continue}
+					if .foe in prev_other_thing.temp_flags &&
+					   other_thing.hurt_size > 0 &&
+					   other_thing.max_health > 0 {
+						circle: Circle = {
+							center = other_thing.pos,
+							size   = other_thing.hurt_size,
+						}
+						seg: Segment = {
+							start = prev_thing.pos,
+							end   = thing.pos,
+						}
+						if segment_circle_collision(seg, circle) {
+							other_thing.health -= thing.attack_strength
+							set_thing(things, other_idx, other_thing)
+							if .piercing in prev_thing.temp_flags {
+								thing.piercing -= 1
+								set_thing(things, idx, thing)
+							}
+						}
+					}
+				}
+			}
+			if .foe in prev_thing.temp_flags {
+				for i in 0 ..< things.offset {
+					if i == idx.idx {continue}
+					if things.free[i] {continue}
+					other_idx: ThingIdx = {
+						idx        = i,
+						generation = things.generations[i],
+					}
+					other_thing, _ := get_thing(things, other_idx)
+					prev_other_thing, success := get_thing(things, other_idx)
+					if !success {continue}
+					if .friend in prev_other_thing.temp_flags &&
+					   other_thing.hurt_size > 0 &&
+					   other_thing.max_health > 0 {
+						circle: Circle = {
+							center = other_thing.pos,
+							size   = other_thing.hurt_size,
+						}
+						seg: Segment = {
+							start = prev_thing.pos,
+							end   = thing.pos,
+						}
+						if segment_circle_collision(seg, circle) {
+							other_thing.health -= thing.attack_strength
+							set_thing(things, other_idx, other_thing)
+							if .piercing in prev_thing.temp_flags {
+								thing.piercing -= 1
+								set_thing(things, idx, thing)
+							}
+						}
+					}
+				}
+			}
+		}
+	},
+	.evaluate_life = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
+		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
+		thing, success = get_thing(things, idx)
+		if !success {return}
+		if thing.max_health != 0 {
+			if thing.health < 0 {
+				free_thing(frame_arena, things, idx)
+				return
+			}
+		}
+		if .piercing in prev_thing.temp_flags {
+			if thing.piercing < 0 {
+				free_thing(frame_arena, things, idx)
+				return
+			}
+		}
+	},
+	.auto_target = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
+		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
+		thing, success = get_thing(things, idx)
+		if !success {return}
+		if .auto_targets in prev_thing.temp_flags {
+			closest_target: ThingIdx = {}
+			closest_distance: f32 = thing.sight_range
+			if .friend in prev_thing.temp_flags {
+			}
+			if .foe in prev_thing.temp_flags {
+				for i in 0 ..< things.offset {
+					if i == idx.idx {continue}
+					if things.free[i] {continue}
+					other_idx: ThingIdx = {
+						idx        = i,
+						generation = things.generations[i],
+					}
+					other_thing, _ := get_thing(things, other_idx)
+					prev_other_thing, success := get_thing(things, other_idx)
+					if !success {continue}
+					if .friend in prev_other_thing.temp_flags &&
+					   other_thing.hurt_size > 0 &&
+					   other_thing.max_health > 0 {
+						distance: f32 =
+							linalg.length(other_thing.pos - thing.pos) -
+							other_thing.hurt_size * 0.5
+						if distance < closest_distance {
+							closest_target = other_idx
+							closest_distance = distance
+						}
+					}
+				}
+			}
+			thing.target = closest_target
+			set_thing(things, idx, thing)
+		}
+	},
+	.auto_fire = proc(
+		frame_arena: ^virtual.Arena,
+		prev_input: InputState,
+		input: InputState,
+		prev_game: ^GameState,
+		game: ^GameState,
+		idx: ThingIdx,
+	) {
+		prev_things, things: ^ThingPool = &(prev_game.things), &(game.things)
+		prev_thing, thing: Thing
+		success: bool
+		prev_thing, success = get_thing(prev_things, idx)
+		if !success {return}
+		thing, success = get_thing(things, idx)
+		if !success {return}
+		if .auto_fires in prev_thing.temp_flags {
+			if check_idx(things, thing.target) {
+				if check_idx(things, thing.inventory1) {
+					item, _ := get_thing(things, thing.inventory1)
+					item.temp_flags += {.shooting}
+					set_thing(things, thing.inventory1, item)
+				}
+			}
 		}
 	},
 }
@@ -1321,7 +1664,7 @@ click_actions :: [ClickAction]TaskProc {
 			paint_line(game.level, prev_thing.pos, thing.pos, Every_Tile, kind)
 		//queue_tile_change(game.level, linalg.to_i32(thing.pos), kind)
 		case .edit_things:
-			if game.hot_key < 2 {
+			if game.hot_key < 9 {
 				if tile, _ := get_tile(game.level, linalg.to_i32(thing.pos)); !tile.solid {
 					switch game.hot_key {
 					case 0:
@@ -1349,6 +1692,34 @@ click_actions :: [ClickAction]TaskProc {
 							}
 						}
 					case 1:
+						if .left_mouse not_in prev_input.pressed_buttons {
+							turret_idx, success := push_thing(&(game.things), {})
+							if success {
+								turret: Thing = easy_turret(thing.pos)
+								set_thing(&(game.things), turret_idx, turret)
+								gun: Thing = easy_gun(&(game.things), turret_idx)
+								gun_idx, success := push_thing(&(game.things), gun)
+								if success {
+									turret.inventory1 = gun_idx
+									set_thing(&(game.things), turret_idx, turret)
+								}
+							}
+						}
+        case 2: 
+						if .left_mouse not_in prev_input.pressed_buttons {
+							turret_idx, success := push_thing(&(game.things), {})
+							if success {
+								turret: Thing = easy_flame_turret(thing.pos)
+								set_thing(&(game.things), turret_idx, turret)
+								flame_thrower: Thing = easy_flamethrower(&(game.things), turret_idx)
+								flame_thrower_idx, success := push_thing(&(game.things), flame_thrower)
+								if success {
+									turret.inventory1 = flame_thrower_idx
+									set_thing(&(game.things), turret_idx, turret)
+								}
+							}
+						}
+					case 3:
 						rand: f32 = f32(input.random)
 						push_thing(
 							&(game.things),
@@ -1475,10 +1846,14 @@ resolve_things :: proc(
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .move_with_target)
 	// i will want to make sure all stuff that can change level goes down here
 	// spawn_dot_on_click needs a new name since it can change levels as well now
+	resolve_task(frame_arena, prev_input, input, prev_game, game, .attack)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .shoot)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .freeze)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .handle_click)
+	resolve_task(frame_arena, prev_input, input, prev_game, game, .evaluate_life)
 	resolve_task(frame_arena, prev_input, input, prev_game, game, .tick_timer)
+	resolve_task(frame_arena, prev_input, input, prev_game, game, .auto_target)
+	resolve_task(frame_arena, prev_input, input, prev_game, game, .auto_fire)
 }
 // movement helpers //
 
@@ -1681,6 +2056,8 @@ tick :: proc(
 
 	resolve_things(frame_arena, prev_input, input, prev_game, game)
 
+	tst := 4
+	fmt.println(game.things.free[tst])
 }
 // drawing
 DrawProc :: proc(things: ^ThingPool, thing: Thing, camera: ThingIdx)
@@ -1787,8 +2164,7 @@ setup_game :: proc(
 		min(
 			f32(raylib.GetRenderWidth()) / f32(game1.level.size.x),
 			f32(raylib.GetRenderHeight()) / f32(game1.level.size.y),
-		) *
-		0.9,
+		),
 	)
 	world_cam_idx, _ := push_thing(&(game1.things), world_cam)
 	world_cam_node, err := virtual.new(first_frame_arena, ThingNode)
@@ -1802,7 +2178,7 @@ setup_game :: proc(
 	mouse_node, err = virtual.new(first_frame_arena, ThingNode)
 	assert(err == .None)
 	mouse_node.thing = mouse_idx
-	list.push_back(&(game1.cameras), &(mouse_node.link))
+	list.push_front(&(game1.cameras), &(mouse_node.link))
 
 	return prev_input, input_state, game1, game2
 }
@@ -2050,8 +2426,8 @@ main :: proc() {
 	setup_rendering()
 
 	prev_frame_arena, frame_arena: ^virtual.Arena = &frame1, &frame2
-	prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
-	//prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
+	//prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
+	prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
 	prev_game: ^GameState = &game1
 	game: ^GameState = &game2
 	tick(prev_frame_arena, frame_arena, prev_input, input, prev_game, game)
@@ -2076,13 +2452,6 @@ main :: proc() {
 		// rendering (TODO) section this off into a different loop
 		raylib.BeginDrawing()
 		raylib.ClearBackground(raylib.LIGHTGRAY)
-		raylib.DrawText(
-			fmt.caprint(game.things.offset),
-			i32(raylib.GetRenderWidth() / 2),
-			50,
-			16,
-			raylib.BLACK,
-		)
 		draw_game(game)
 		selection_count :: 5
 		size: [2]i32 = {50 * selection_count, 50}
@@ -2138,6 +2507,13 @@ main :: proc() {
 		raylib.DrawText(
 			fmt.caprint(game.hot_key),
 			i32(raylib.GetRenderWidth() / 3),
+			50,
+			16,
+			raylib.BLACK,
+		)
+		raylib.DrawText(
+			fmt.caprint(game.things.offset),
+			i32(raylib.GetRenderWidth() / 2),
 			50,
 			16,
 			raylib.BLACK,
