@@ -568,6 +568,7 @@ Thing :: struct {
 	// drawing
 	color:              raylib.Color,
 	draw_size:          [2]f32,
+	texture:            Sprites,
 	draw_thing:         Draw,
 	// on click
 	on_click:           ClickAction, // is not a task, it just needs the same signature
@@ -641,9 +642,10 @@ easy_rat :: proc(start_pos: [2]f32, things: ^ThingPool) -> (rat: Thing) {
 	}
 	rat = {
 		pos              = start_pos,
-		draw_size        = 0.5,
+		draw_size        = {1.0, 1.0},
 		color            = raylib.GRAY,
-		draw_thing       = .draw_dot,
+		texture          = .rat,
+		draw_thing       = .draw_texture,
 		running_strength = 2,
 		drag_coefficient = 1.7,
 		health           = 100,
@@ -665,8 +667,9 @@ easy_snow_golem :: proc(starting_pos: [2]f32) -> (snow_golem: Thing) {
 		on_wall          = Walls{}, // on_wall
 		flags            = {.moves_with_wasd, .friend, .auto_targets, .auto_fires}, // flags
 		color            = raylib.WHITE,
-		draw_size        = {0.5, 0.5},
-		draw_thing       = .draw_dot, // draw_thing
+		draw_size        = {1.0, 1.0},
+		texture          = .snow_golem,
+		draw_thing       = .draw_texture, // draw_thing
 		max_health       = 30,
 		health           = 30,
 		hurt_size        = 0.45,
@@ -680,8 +683,9 @@ easy_golem_spawner :: proc(pos: [2]f32, destructable: bool) -> (spawner: Thing) 
 		pos          = pos,
 		flags        = {.auto_targets, .spawns_golems, .auto_fires},
 		color        = raylib.Color{152, 132, 255, 255},
-		draw_size    = {0.7, 0.7},
-		draw_thing   = .draw_dot,
+		draw_size    = {1.0, 1.0},
+		texture      = .snow_golem_cave,
+		draw_thing   = .draw_texture,
 		sight_range  = 10,
 		timer_length = fire_rate,
 		timer        = -1,
@@ -712,8 +716,9 @@ easy_slicking :: proc(
 		target           = mouse_target, // target
 		flags            = {.moves_with_wasd, .friend}, // flags
 		color            = raylib.BLACK,
-		draw_size        = {0.5, 0.5},
-		draw_thing       = .draw_dot, // draw_thing
+		draw_size        = {1.0, 1.0},
+		texture          = .standing_penguine,
+		draw_thing       = .draw_texture, // draw_thing
 		on_click         = .slicking, // on_click
 		max_health       = 500,
 		health           = 500,
@@ -733,7 +738,7 @@ easy_snow_gun :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (snow_gun: 
 		on_timeout   = .do_nothing,
 		color        = raylib.BLACK,
 		draw_size    = {0.125, 0.125},
-		draw_thing   = .draw_dot,
+		draw_thing   = .draw_nothing,
 	}
 	return snow_gun
 }
@@ -749,7 +754,7 @@ easy_ice_gun :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (ice_gun: Th
 		on_timeout   = .do_nothing,
 		color        = raylib.ORANGE,
 		draw_size    = {0.125, 0.125},
-		draw_thing   = .draw_dot,
+		draw_thing   = .draw_nothing,
 	}
 	return ice_gun
 }
@@ -795,8 +800,9 @@ easy_turret :: proc(pos: [2]f32) -> (turret: Thing) {
 		// auto target flag
 		flags       = {.foe, .auto_targets, .auto_fires},
 		color       = raylib.DARKGRAY,
-		draw_size   = {0.6, 0.6},
-		draw_thing  = .draw_dot,
+		draw_size   = {1.0, 1.0},
+		texture     = .turret,
+		draw_thing  = .draw_turret,
 		max_health  = 100,
 		health      = 100,
 		hurt_size   = 0.62,
@@ -810,12 +816,13 @@ easy_flame_turret :: proc(pos: [2]f32) -> (turret: Thing) {
 		// auto target flag
 		flags       = {.foe, .auto_targets, .auto_fires},
 		color       = raylib.Color{180, 41, 55, 255},
-		draw_size   = {0.6, 0.6},
-		draw_thing  = .draw_dot,
+		draw_size   = {1.0, 1.0},
+		texture     = .fire_turret,
+		draw_thing  = .draw_turret,
 		max_health  = 100,
 		health      = 100,
 		hurt_size   = 0.62,
-		sight_range = 30,
+		sight_range = 15,
 	}
 	return turret
 }
@@ -834,7 +841,7 @@ easy_gun :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (gun: Thing) {
 		on_timeout   = .do_nothing,
 		color        = raylib.BLACK,
 		draw_size    = {0.125, 0.125},
-		draw_thing   = .draw_dot,
+		draw_thing   = .draw_nothing,
 	}
 	return gun
 }
@@ -853,7 +860,7 @@ easy_flamethrower :: proc(thing_pool: ^ThingPool, user_idx: ThingIdx) -> (flamet
 		on_timeout   = .do_nothing,
 		color        = raylib.ORANGE,
 		draw_size    = {0.125, 0.125},
-		draw_thing   = .draw_dot,
+		draw_thing   = .draw_nothing,
 	}
 	return flamethrower
 }
@@ -866,8 +873,9 @@ easy_flame :: proc(pos: [2]f32, dir: [2]f32) -> (flame: Thing) {
 		attack_strength  = 3,
 		flags            = {.freezing, .ignore_friction, .piercing, .foe},
 		color            = raylib.RED,
-		draw_size        = {0.125, 0.125},
-		draw_thing       = .draw_dot,
+		draw_size        = {0.25, 0.25},
+		texture          = .fire_bullet,
+		draw_thing       = .draw_texture,
 		timer            = 0,
 		timer_length     = 0.5,
 		on_timeout       = .free_yourself,
@@ -2402,6 +2410,29 @@ Draw :: enum {
 	draw_nothing,
 	draw_dot,
 	draw_patrol_point,
+	draw_texture,
+	draw_turret,
+}
+draw_texture :: proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {
+	camera, successful := get_thing(things, camera_idx)
+	if successful {
+
+		texture := global_textures[thing.texture]
+		dimensions: [2]f32 = {f32(texture.width), f32(texture.height)}
+		text_scale := max(dimensions.x, dimensions.y)
+		pos := world_to_screenspace(things, thing.pos, camera_idx)
+		source_rect: raylib.Rectangle = {0, 0, dimensions.x, dimensions.y}
+		dest_rect: raylib.Rectangle = {
+			pos.x,
+			pos.y,
+			dimensions.x * 2.0 * camera.zoom / text_scale * thing.draw_size.x,
+			dimensions.y * 2.0 * camera.zoom / text_scale * thing.draw_size.y,
+		}
+		origin: [2]f32 = dimensions * camera.zoom / text_scale * thing.draw_size
+		rotation: f32 = math.atan2(thing.velocity.y, thing.velocity.x) * 180 / math.PI + 90
+
+		raylib.DrawTexturePro(texture, source_rect, dest_rect, origin, rotation, raylib.WHITE)
+	}
 }
 draw_dot :: proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {
 	camera, successful := get_thing(things, camera_idx)
@@ -2417,6 +2448,33 @@ draw_dot :: proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {
 drawing :: [Draw]DrawProc {
 	.draw_nothing = proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {},
 	.draw_dot = draw_dot,
+	.draw_texture = draw_texture,
+	.draw_turret = proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {
+		camera, successful := get_thing(things, camera_idx)
+		if successful {
+
+			texture := global_textures[thing.texture]
+			dimensions: [2]f32 = {f32(texture.width), f32(texture.height)}
+			text_scale := max(dimensions.x, dimensions.y)
+			pos := world_to_screenspace(things, thing.pos, camera_idx)
+			source_rect: raylib.Rectangle = {0, 0, dimensions.x, dimensions.y}
+			dest_rect: raylib.Rectangle = {
+				pos.x,
+				pos.y,
+				dimensions.x * 2.0 * camera.zoom / text_scale * thing.draw_size.x,
+				dimensions.y * 2.0 * camera.zoom / text_scale * thing.draw_size.y,
+			}
+			origin: [2]f32 = dimensions * camera.zoom / text_scale * thing.draw_size
+			dir: [2]f32 = {0, 1}
+			target, success := get_thing(things, thing.target)
+			if success {
+				dir = linalg.normalize0(target.pos - thing.pos)
+			}
+			rotation: f32 = math.atan2(-dir.y, -dir.x) * 180 / math.PI + 90
+
+			raylib.DrawTexturePro(texture, source_rect, dest_rect, origin, rotation, raylib.WHITE)
+		}
+	},
 	.draw_patrol_point = proc(things: ^ThingPool, thing: Thing, camera_idx: ThingIdx) {
 		draw_dot(things, thing, camera_idx)
 		camera, successful := get_thing(things, camera_idx)
@@ -2758,6 +2816,66 @@ load_game :: proc(
 	return seri_input, seri_game
 }
 
+
+Sprites :: enum {
+	king_rat, // 0,0 to 9,23
+	rat, // 10,1 to 18,25
+	fire_rat, // 19,1 to 30,26
+	sliding_penguin, // 31,1 to 53,24
+	jetpack_penguin, // 55,1 to 77,24
+	hotbar, // 1,27 to 56,41
+	tiny_rat, // 58,27 to 62,36
+	snow_gomlet, // 67,28 to 77,34
+	snow_golem, // 1,43 to 21,54
+	evil_snow_golem, // 23,43 to 43, 54
+	cursor, // 43,43 to 4545
+	snow_golem_cave, // 48,45 to 59,53
+	selection_indicator, // 63,37 to 77,48
+	turret_base, // 1,55 to 12,66
+	fire_turret, // 13,55 to 20,65
+	turret, // 21,55 to 28,65
+	bullet, // 30,56 to 33,59
+	fire_bullet, // 34,56 to 37,59
+	standing_penguine, // 40,55 to 52,70
+	base_penguine_sliding, // 55,51 to 77,70
+}
+global_textures: [Sprites]raylib.Texture2D
+load_textures :: proc() -> (textures: [Sprites]raylib.Texture2D) {
+	images: [Sprites]raylib.Image = {}
+	sprites := raylib.LoadImage("sprites.png")
+	//raylib.DrawTexture(raylib.LoadTextureFromImage(sprites), 0, 0, raylib.WHITE)
+	for &image in images {
+		image = raylib.ImageCopy(sprites)
+	}
+	raylib.ImageCrop(&images[.king_rat], raylib.Rectangle{0, 0, 9, 23})
+	raylib.ImageCrop(&images[.rat], raylib.Rectangle{10, 1, 18 - 10, 25 - 1})
+	raylib.ImageCrop(&images[.fire_rat], raylib.Rectangle{19, 1, 30 - 19, 26 - 1})
+	raylib.ImageCrop(&images[.sliding_penguin], raylib.Rectangle{31, 1, 53 - 31, 24 - 1})
+	raylib.ImageCrop(&images[.jetpack_penguin], raylib.Rectangle{55, 1, 77 - 55, 24 - 1})
+	raylib.ImageCrop(&images[.hotbar], raylib.Rectangle{1, 27, 56 - 1, 41 - 27})
+	raylib.ImageCrop(&images[.tiny_rat], raylib.Rectangle{58, 27, 62 - 58, 36 - 27})
+	raylib.ImageCrop(&images[.snow_gomlet], raylib.Rectangle{67, 28, 77 - 67, 34 - 28})
+	raylib.ImageCrop(&images[.snow_golem], raylib.Rectangle{1, 43, 21 - 1, 54 - 43})
+	raylib.ImageCrop(&images[.evil_snow_golem], raylib.Rectangle{23, 43, 43 - 23, 54 - 43})
+	raylib.ImageCrop(&images[.cursor], raylib.Rectangle{43, 43, 45 - 43, 45 - 43})
+	raylib.ImageCrop(&images[.snow_golem_cave], raylib.Rectangle{48, 45, 59 - 48, 53 - 45})
+	raylib.ImageCrop(&images[.selection_indicator], raylib.Rectangle{63, 37, 77 - 63, 48 - 37})
+	raylib.ImageCrop(&images[.turret_base], raylib.Rectangle{1, 55, 12 - 1, 66 - 55})
+	raylib.ImageCrop(&images[.fire_turret], raylib.Rectangle{13, 55, 20 - 13, 65 - 55})
+	raylib.ImageCrop(&images[.turret], raylib.Rectangle{21, 55, 28 - 21, 65 - 55})
+	raylib.ImageCrop(&images[.bullet], raylib.Rectangle{30, 56, 33 - 30, 59 - 56})
+	raylib.ImageCrop(&images[.fire_bullet], raylib.Rectangle{34, 56, 37 - 34, 59 - 56})
+	raylib.ImageCrop(&images[.standing_penguine], raylib.Rectangle{40, 55, 52 - 40, 70 - 55})
+	raylib.ImageCrop(&images[.base_penguine_sliding], raylib.Rectangle{55, 51, 77 - 55, 70 - 51})
+
+	test_coords: [2]f32 = {0, 0}
+	for image, sprite in images {
+		textures[sprite] = raylib.LoadTextureFromImage(image)
+	}
+	//raylib.DrawTextureV(textures[.rat], {0, 0}, raylib.WHITE)
+	return textures
+}
+
 main :: proc() {
 	fmt.println(estimate_max_runtime(mem.Megabyte), "minutes")
 	fmt.println(size_of(Thing) + 4 + 1)
@@ -2779,6 +2897,8 @@ main :: proc() {
 
 
 	setup_rendering()
+	global_textures = load_textures()
+
 
 	prev_frame_arena, frame_arena: ^virtual.Arena = &frame1, &frame2
 	//prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
@@ -2809,56 +2929,6 @@ main :: proc() {
 		raylib.ClearBackground(raylib.LIGHTGRAY)
 		draw_game(game)
 		selection_count :: 5
-		size: [2]i32 = {50 * selection_count, 50}
-		center: [2]i32 = {raylib.GetRenderWidth() / 2, raylib.GetRenderHeight() - 50}
-		raylib.DrawRectangle(
-			center.x - size.x / 2,
-			center.y - size.y / 2,
-			size.x,
-			size.y,
-			raylib.DARKBLUE,
-		)
-		square_size: [2]i32 = {40, 40}
-		square_center: [2]i32 = {center.x - size.x / 2, center.y}
-		raylib.DrawRectangle(
-			square_center.x + 5,
-			square_center.y - square_size.y / 2,
-			40,
-			40,
-			easy_tiles[.snow].color,
-		)
-		square_center.x += 50
-		raylib.DrawRectangle(
-			square_center.x + 5,
-			square_center.y - square_size.y / 2,
-			40,
-			40,
-			easy_tiles[.dirt].color,
-		)
-		square_center.x += 50
-		raylib.DrawRectangle(
-			square_center.x + 5,
-			square_center.y - square_size.y / 2,
-			40,
-			40,
-			easy_tiles[.ice].color,
-		)
-		square_center.x += 50
-		raylib.DrawRectangle(
-			square_center.x + 5,
-			square_center.y - square_size.y / 2,
-			40,
-			40,
-			easy_tiles[.water].color,
-		)
-		square_center.x += 50
-		raylib.DrawRectangle(
-			square_center.x + 5,
-			square_center.y - square_size.y / 2,
-			40,
-			40,
-			easy_tiles[.wall].color,
-		)
 		raylib.DrawText(
 			fmt.caprint(game.hot_key),
 			i32(raylib.GetRenderWidth() / 3),
@@ -2874,6 +2944,7 @@ main :: proc() {
 			raylib.BLACK,
 		)
 		raylib.DrawFPS(raylib.GetRenderWidth() - 100, 50)
+		load_textures()
 		raylib.EndDrawing()
 
 	}
