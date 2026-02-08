@@ -2834,7 +2834,7 @@ Sprites :: enum {
 global_textures: [Sprites]raylib.Texture2D
 load_textures :: proc() -> (textures: [Sprites]raylib.Texture2D) {
 	images: [Sprites]raylib.Image = {}
-	sprites := raylib.LoadImage("sprites.png")
+	sprites := raylib.LoadImage(fmt.caprintf("%ssprites.png", #directory))
 	//raylib.DrawTexture(raylib.LoadTextureFromImage(sprites), 0, 0, raylib.WHITE)
 	for &image in images {
 		image = raylib.ImageCopy(sprites)
