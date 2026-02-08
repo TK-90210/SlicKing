@@ -2720,7 +2720,7 @@ load_game :: proc(
 	scratch: virtual.Arena_Temp = get_scratch()
 	data_size: i32 = 0
 	// (TODO) use io stream or something instead so i can use scratch arena instead of context allocator
-	seri_data: [^]byte = raylib.LoadFileData(fmt.caprintf("%sseri", #directory), &data_size)
+	seri_data: [^]byte = raylib.LoadFileData("seri", &data_size)
 	seri_bytes: []byte = seri_data[:data_size]
 
 	init_things(arena, &(seri_game.things), max_thing_count)
@@ -2834,7 +2834,7 @@ Sprites :: enum {
 global_textures: [Sprites]raylib.Texture2D
 load_textures :: proc() -> (textures: [Sprites]raylib.Texture2D) {
 	images: [Sprites]raylib.Image = {}
-	sprites := raylib.LoadImage(fmt.caprintf("%ssprites.png", #directory))
+	sprites := raylib.LoadImage("sprites.png")
 	//raylib.DrawTexture(raylib.LoadTextureFromImage(sprites), 0, 0, raylib.WHITE)
 	for &image in images {
 		image = raylib.ImageCopy(sprites)
