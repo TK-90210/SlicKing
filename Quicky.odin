@@ -2921,21 +2921,8 @@ main :: proc() {
 		raylib.ClearBackground(raylib.LIGHTGRAY)
 		draw_game(game)
 		selection_count :: 5
-		raylib.DrawText(
-			fmt.caprint(game.hot_key),
-			i32(raylib.GetRenderWidth() / 3),
-			50,
-			16,
-			raylib.BLACK,
-		)
-		raylib.DrawText(
-			fmt.caprint(game.things.offset),
-			i32(raylib.GetRenderWidth() / 2),
-			50,
-			16,
-			raylib.BLACK,
-		)
-		raylib.DrawFPS(raylib.GetRenderWidth() - 100, 50)
+    raylib.DrawTextureEx(global_textures[.hotbar], linalg.to_f32([2]i32{raylib.GetRenderWidth() / 2 - global_textures[.hotbar].width * 8 / 2, raylib.GetRenderHeight() - 120}), 0, 8, raylib.WHITE)
+
 		raylib.EndDrawing()
 
 	}
