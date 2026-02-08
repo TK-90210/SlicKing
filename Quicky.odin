@@ -1,11 +1,3 @@
-// TODO TOMORROW
-// Snow Gun
-// Enemy
-// Enemy Gun
-// Health
-// Snow Golem
-// Carrot Gun
-// Level
 package main
 import "base:runtime"
 import "core:bytes"
@@ -2901,8 +2893,8 @@ main :: proc() {
 
 
 	prev_frame_arena, frame_arena: ^virtual.Arena = &frame1, &frame2
-	//prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
-	prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
+	prev_input, input, game1, game2 := setup_game_with_load(&lifelong, prev_frame_arena)
+	//prev_input, input, game1, game2 := setup_game(&lifelong, prev_frame_arena)
 	prev_game: ^GameState = &game1
 	game: ^GameState = &game2
 	tick(prev_frame_arena, frame_arena, prev_input, input, prev_game, game)
@@ -2944,7 +2936,6 @@ main :: proc() {
 			raylib.BLACK,
 		)
 		raylib.DrawFPS(raylib.GetRenderWidth() - 100, 50)
-		load_textures()
 		raylib.EndDrawing()
 
 	}
