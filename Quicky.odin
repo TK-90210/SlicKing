@@ -863,7 +863,7 @@ easy_flame :: proc(pos: [2]f32, dir: [2]f32) -> (flame: Thing) {
 		velocity         = linalg.normalize0(dir) * flame_speed,
 		drag_coefficient = 1.4, // streamlined body from wikipedia
 		attack_strength  = 3,
-		flags            = {.freezing, .ignore_friction, .piercing, .foe},
+		flags            = {.ignore_friction, .piercing, .foe},
 		color            = raylib.RED,
 		draw_size        = {0.25, 0.25},
 		texture          = .fire_bullet,
